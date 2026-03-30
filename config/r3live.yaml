@@ -1,0 +1,131 @@
+width: 640
+height: 512
+fx: 431.71205
+fy: 431.70855
+cx: 320.3404
+cy: 259.1696
+
+select_every_k_frame: 5
+
+sh_degree: 3
+white_background: false  # no adjustment needed
+random_background: false  # no adjustment needed
+convert_SHs_python: false  # no adjustment needed
+compute_cov3D_python: false  # no adjustment needed
+lambda_erank: 0  # no adjustment needed
+scaling_scale: 2
+
+position_lr: 0.00016
+feature_lr: 0.0025
+opacity_lr: 0.05
+scaling_lr: 0.005
+rotation_lr: 0.001
+lambda_dssim: 0.2
+
+apply_exposure: false
+exposure_lr: 0.001
+skybox_points_num: 100000  # 0 for indoor
+skybox_radius: 1000
+
+# === 新增 ===
+lambda_dist: 0.0005
+lambda_normal: 0.0
+alpha_threshold: 0.99
+slide_window_size: 15
+hiloss_threshold: 0.2
+hiColorLoss_threshold: 0.1
+train_times_threshold: 40
+# legacy
+opacity_threshold: 0.005
+opacity_modifier: 0.5
+scale_modifier: 0.5
+
+# === SPNet 深度补全配置（仅用于补点，逻辑保持不变）===
+spnet_model_path: /home/lab404/catkin_gaussian/Tiny_300_export.pt  # TorchScript 模型路径，取消注释并填写实际路径以启用
+spnet_max_depth: 100.0                        # 最大深度值 (室外=100m, 室内=20m)
+spnet_epsilon_1: 0.3
+spnet_epsilon_2: 80.0
+spnet_patch_size: 30
+spnet_dilate_radius: 0
+spnet_depth_grad_threshold: 0.5
+# spnet_use_depth_normal_rotation_init: false
+spnet_enforce_normal_face_camera: true
+# spnet_fallback_view_ray_when_invalid: true
+
+# === DA3 稠密深度引导配置（仅用于法线初始化，不影响 SPNet 补点）===
+da3_model_path: /home/lab404/catkin_gaussian/src/Gaussian-LIC/Depth-Anything-3/DA3_BASE_libtorch.pt  # DA3 TorchScript 模型路径
+da3_min_depth: 0.1        # 最小有效深度(m)：推荐 0.05~0.5，可调 0.01~1.0
+da3_max_depth: 100.0       # 最大有效深度(m)：推荐 15~40，可调 10~100（与场景尺度相关）
+da3_conf_threshold: 0.6   # 置信度阈值[0,1]：推荐 0.5~0.8，可调 0.0~0.9（0 表示不使用置信度过滤）
+da3_align_min_points: 30  # 最小二乘对齐最少匹配点数：推荐 30~100，可调 10~300
+da3_save_depth_vis: false  # 是否保存对齐后深度可视化（仅输出 *_da3_aligned_ls.png，便于快速排查）
+
+use_Gaussian_regress: false
+if_prune: false
+backbone_path: "/home/lab404/catkin_gaussian/backbone.pt"
+mlp_path: "/home/lab404/catkin_gaussian/gaussian_mlp.pt"
+generate_dataset: true
+dataset_target_train_times: 40
+
+dataset_path: "/home/lab404/dataset/gs_rg_r3live/dataset"
+
+# === 单帧训练过程可视化评估 ===
+# frame id 使用原始全局帧号，例如 train_0004.jpg 对应 4
+# 保存结构为 train_xxxx/times_xxxx，用来观察同一张训练图像随着训练推进的变化
+enable_train_visual_eval: false
+train_visual_eval_every_k_train_times: 4
+train_visual_eval_frame_ids: [4, 84, 64, 199, 599, 794, 929, 964, 1234, 1264, 1589, 1784, 1799, 1814, 1839, 1854, 1874]
+train_visual_eval_output_dir: "train_visual_eval"
+
+extend_debug: true # 记录实时渲染图、alpha图、带有lidar选择的rgb图
+
+scale_ratio_threshold: 100
+dark_color_threshold: 7
+color_gradient_threshold: 0.02
+voxel_size: 0.1
+enable_regress_high_grad_traditional_init: false
+regress_high_grad_keep_ratio: 0.9
+
+
+densify_grad_threshold: 0.001
+percent_dense: 0.01                   # 高斯尺度与场景范围比较阈值（用于致密化分支判断）
+densify_from_train_times: 200000          # 单帧训练达到该次数后才允许进入致密化候选
+densification_interval: 40            # 单帧按训练次数取模触发致密化（时间维度稀疏）
+densify_index_gap: 15                 # 同一轮被致密化帧的最小索引间隔（降低共视重叠）
+densify_max_per_round: 10              # 每轮 optimize 最多执行的致密化帧数
+densify_covis_window: 7              # 共视邻域半径（索引近似），用于跨轮训练门控
+densify_min_train_after_covis: 20     # 邻域上次致密化后，帧需新增的最小训练次数
+densify_train_gate_alpha: 0.5         # 训练充分性在候选打分中的权重（越大越偏向训练充分帧）
+post_densify_window_radius: 15        # 致密化后优先训练窗口半径（P_boost）
+post_densify_boost_rounds: 2          # 致密化后窗口优先保留轮数
+post_densify_boost_budget: 20         # 每轮分配给 P_boost 的最大样本数
+opacity_cull_threshold: 0.000005        # 致密化后按不透明度裁剪阈值
+scene_extent: 50.0                    # 场景范围估计（影响尺度相关判断）
+densify_alpha: 0.5                    # 致密化位移步长系数（分裂时扰动幅度）
+
+enable_normal_cull: false
+normal_z_cutoff: -0.001
+
+# === Backward Pose Optimization (IEKF) ===
+enable_pose_refinement: false
+pose_max_iterations: 5
+pose_img_point_cov: 100.0
+pose_patch_size: 3  # 兼容旧版灰度 patch 位姿优化，当前 RGB 线性化实现未使用
+pose_init_cov: 0.01
+pose_conv_thresh_rot: 0.001
+pose_conv_thresh_pos: 0.001
+pose_refine_start_frame: 2
+pose_alpha_threshold: 0.2
+pose_huber_delta: 0.05
+pose_min_valid_pixels: 256
+pose_rerender_each_iter: true
+pose_max_step_rot_deg: 0.3
+pose_max_step_trans_cm: 3.0
+pose_rmse_increase_tolerance_ratio: 0.01
+pose_min_alpha_coverage_ratio: 0.005
+pose_alpha_erode_radius: 1
+
+densify_new_opacity_scale: 0.5
+densify_new_opacity_min: 0.005
+densify_newborn_boost_steps: 20
+densify_newborn_pos_lr_scale: 2.0

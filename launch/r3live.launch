@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="config_path"       default = "config/r3live.yaml" />
+  <arg name="dataset_path"      default = "" />
+  <!-- <arg name="generate_dataset"  default = "false" />
+  <arg name="dataset_target_train_times" default = "100" />
+  <arg name="use_Gaussian_regress" default = "false" /> -->
+  <arg name="result_path" default = "" />
+  <!-- <arg name="opacity_modifier" default = "0.5" /> -->
+  <!-- <arg name="enable_train_visual_eval" default = "false" />
+  <arg name="train_visual_eval_every_k_train_times" default = "1" />
+  <arg name="train_visual_eval_frame_ids" default = "" />
+  <arg name="train_visual_eval_output_dir" default = "" /> -->
+
+  <node pkg="gaussian_lic" type="gs_mapping" name="$(anon gs_mapping)" output="screen">
+    <param name="config_path"     type="string" value="$(find gaussian_lic)/$(arg config_path)" />
+    <param name="result_path"     type="string" value="$(find gaussian_lic)/result" if="$(eval arg('result_path') == '')" />
+    <param name="result_path"     type="string" value="$(arg result_path)" unless="$(eval arg('result_path') == '')" />
+    <param name="lpips_path"     type="string" value="$(find gaussian_lic)/src/lpips" />
+    <param name="dataset_path"   type="string" value="$(arg dataset_path)" if="$(eval arg('dataset_path') != '')" />
+    <!-- <param name="generate_dataset" type="bool"  value="$(arg generate_dataset)" />
+    <param name="dataset_target_train_times" type="int"  value="$(arg dataset_target_train_times)" />
+    <param name="use_Gaussian_regress" type="bool"  value="$(arg use_Gaussian_regress)" /> -->
+    <!-- <param name="opacity_modifier" type="double"  value="$(arg opacity_modifier)" /> -->
+    <!-- <param name="enable_train_visual_eval" type="bool"  value="$(arg enable_train_visual_eval)" />
+    <param name="train_visual_eval_every_k_train_times" type="int"  value="$(arg train_visual_eval_every_k_train_times)" />
+    <param name="train_visual_eval_frame_ids" type="string"  value="$(arg train_visual_eval_frame_ids)" />
+    <param name="train_visual_eval_output_dir" type="string"  value="$(arg train_visual_eval_output_dir)" /> -->
+  </node>
+
+</launch>
