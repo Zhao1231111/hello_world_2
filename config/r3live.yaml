@@ -41,7 +41,7 @@ opacity_modifier: 0.5
 scale_modifier: 0.5
 
 # === SPNet 深度补全配置（仅用于补点，逻辑保持不变）===
-spnet_model_path: /home/lab404/catkin_gaussian/Tiny_300_export.pt  # TorchScript 模型路径，取消注释并填写实际路径以启用
+spnet_model_path: ~/catkin_gaussian/Tiny_300_export.pt  # TorchScript 模型路径，取消注释并填写实际路径以启用
 spnet_max_depth: 100.0                        # 最大深度值 (室外=100m, 室内=20m)
 spnet_epsilon_1: 0.3
 spnet_epsilon_2: 80.0
@@ -53,7 +53,7 @@ spnet_enforce_normal_face_camera: true
 # spnet_fallback_view_ray_when_invalid: true
 
 # === DA3 稠密深度引导配置（仅用于法线初始化，不影响 SPNet 补点）===
-da3_model_path: /home/lab404/catkin_gaussian/src/Gaussian-LIC/Depth-Anything-3/DA3_BASE_libtorch.pt  # DA3 TorchScript 模型路径
+da3_model_path: ~/catkin_gaussian/src/Gaussian-LIC/Depth-Anything-3/DA3_BASE_libtorch.pt  # DA3 TorchScript 模型路径
 da3_min_depth: 0.1        # 最小有效深度(m)：推荐 0.05~0.5，可调 0.01~1.0
 da3_max_depth: 100.0       # 最大有效深度(m)：推荐 15~40，可调 10~100（与场景尺度相关）
 da3_conf_threshold: 0.6   # 置信度阈值[0,1]：推荐 0.5~0.8，可调 0.0~0.9（0 表示不使用置信度过滤）
@@ -62,12 +62,12 @@ da3_save_depth_vis: false  # 是否保存对齐后深度可视化（仅输出 *_
 
 use_Gaussian_regress: false
 if_prune: false
-backbone_path: "/home/lab404/catkin_gaussian/backbone.pt"
-mlp_path: "/home/lab404/catkin_gaussian/gaussian_mlp.pt"
+backbone_path: "~/catkin_gaussian/backbone.pt"
+mlp_path: "~/catkin_gaussian/gaussian_mlp.pt"
 generate_dataset: true
 dataset_target_train_times: 40
 
-dataset_path: "/home/lab404/dataset/gs_rg_r3live/dataset"
+dataset_path: "~/autodl-tmp/dataset//gs_rg_r3live/dataset"
 
 # === 单帧训练过程可视化评估 ===
 # frame id 使用原始全局帧号，例如 train_0004.jpg 对应 4
