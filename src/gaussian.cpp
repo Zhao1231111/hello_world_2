@@ -1574,7 +1574,7 @@ void GaussianModel::saveDataset(const std::string& path, const std::shared_ptr<D
     // 这份文件的字段格式与 point_cloud.ply 保持一致，只是参数来自 train_times=K 时的在线快照。
     this->saveDatasetTargetMap(base_path, dataset);
 
-    this->saveMap(base_path);
+    // this->saveMap(base_path);
     std::cout << "\033[1;32m [Dataset] Saved map to " << base_path << " \033[0m" << std::endl;
 }
 
@@ -2531,23 +2531,23 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
         fs::create_directories(debug_dir + "/marked");
 
         // 保存 rendered_image
-        torch::Tensor r_img_tensor = render_pkg.rendered_image.detach().cpu().permute({1, 2, 0}).contiguous();
-        r_img_tensor = r_img_tensor.mul(255).clamp(0, 255).to(torch::kU8);
-        cv::Mat r_mat(H, W, CV_8UC3, r_img_tensor.data_ptr<uint8_t>());
-        cv::cvtColor(r_mat, r_mat, cv::COLOR_RGB2BGR);
-        cv::imwrite(debug_dir + "/render/" + viewpoint_cam->image_name_, r_mat);
+        // torch::Tensor r_img_tensor = render_pkg.rendered_image.detach().cpu().permute({1, 2, 0}).contiguous();
+        // r_img_tensor = r_img_tensor.mul(255).clamp(0, 255).to(torch::kU8);
+        // cv::Mat r_mat(H, W, CV_8UC3, r_img_tensor.data_ptr<uint8_t>());
+        // cv::cvtColor(r_mat, r_mat, cv::COLOR_RGB2BGR);
+        // cv::imwrite(debug_dir + "/render/" + viewpoint_cam->image_name_, r_mat);
 
         // 保存 rendered_alpha
-        torch::Tensor a_img_tensor = rendered_alpha.detach().cpu().contiguous();
-        a_img_tensor = a_img_tensor.mul(255).clamp(0, 255).to(torch::kU8);
-        cv::Mat a_mat(H, W, CV_8UC1, a_img_tensor.data_ptr<uint8_t>());
-        cv::imwrite(debug_dir + "/alpha/" + viewpoint_cam->image_name_, a_mat);
+        // torch::Tensor a_img_tensor = rendered_alpha.detach().cpu().contiguous();
+        // a_img_tensor = a_img_tensor.mul(255).clamp(0, 255).to(torch::kU8);
+        // cv::Mat a_mat(H, W, CV_8UC1, a_img_tensor.data_ptr<uint8_t>());
+        // cv::imwrite(debug_dir + "/alpha/" + viewpoint_cam->image_name_, a_mat);
 
         // 在 original_image (rgb) 上标记新高斯的位置并保存
-        torch::Tensor rgb_marked = rgb.clone().detach().cpu().permute({1, 2, 0}).contiguous();
-        rgb_marked = rgb_marked.mul(255).clamp(0, 255).to(torch::kU8);
-        cv::Mat rgb_mat(H, W, CV_8UC3, rgb_marked.data_ptr<uint8_t>());
-        cv::cvtColor(rgb_mat, rgb_mat, cv::COLOR_RGB2BGR);
+        // torch::Tensor rgb_marked = rgb.clone().detach().cpu().permute({1, 2, 0}).contiguous();
+        // rgb_marked = rgb_marked.mul(255).clamp(0, 255).to(torch::kU8);
+        // cv::Mat rgb_mat(H, W, CV_8UC3, rgb_marked.data_ptr<uint8_t>());
+        // cv::cvtColor(rgb_mat, rgb_mat, cv::COLOR_RGB2BGR);
         
         torch::Tensor debug_pixels = new_pixels;
         if (traditional_extra_num > 0) {
@@ -3313,10 +3313,10 @@ void runTrainVisualEvalIfNeeded(const std::shared_ptr<Dataset>& dataset,
 
     saveTensorImageAsBgr(rendered_image, render_path.string());
 
-    const fs::path gt_path = train_dir / "gt.png";
-    if (!fs::exists(gt_path)) {
-        saveTensorImageAsBgr(train_camera->original_image_.clamp(0, 1), gt_path.string());
-    }
+    // const fs::path gt_path = train_dir / "gt.png";
+    // if (!fs::exists(gt_path)) {
+    //     saveTensorImageAsBgr(train_camera->original_image_.clamp(0, 1), gt_path.string());
+    // }
 
     {
         std::ofstream ofs(metrics_path);

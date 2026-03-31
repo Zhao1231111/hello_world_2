@@ -483,9 +483,9 @@ def train(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Multi-Scenario Formal Regressor Training Script")
-    parser.add_argument("--shards_dir", type=str, default="~/autodl-tmp/dataset//gs_rg_r3live/shards", help="Path to precomputed `.pt` buckets for training")
+    parser.add_argument("--shards_dir", type=str, default="/root/autodl-tmp/dataset/gs_rg_r3live/shards", help="Path to precomputed `.pt` buckets for training")
     parser.add_argument("--val_shards_dir", type=str, default="", help="Path to validation buckets. If empty, validation is skipped.")
-    parser.add_argument("--save_dir", type=str, default="~/autodl-tmp/dataset//gs_rg_r3live/training_results", help="Directory to save checkpoints, logs and tb data")
+    parser.add_argument("--save_dir", type=str, default="/root/autodl-tmp/dataset/gs_rg_r3live/training_results", help="Directory to save checkpoints, logs and tb data")
     parser.add_argument("--resume", type=str, default="", help="Path to checkpoint `.pth` to resume training from")
     
     # 核心训练参数

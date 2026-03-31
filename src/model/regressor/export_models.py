@@ -85,7 +85,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Export trained Gaussian MLP to TorchScript (.pt) format")
     parser.add_argument("--ckpt_path", type=str, required=True, help="Path to the trained .pth checkpoint")
     parser.add_argument("--output_path", type=str, default="gaussian_mlp.pt", help="Path to save the traced .pt file")
-    parser.add_argument("--yaml_path", type=str, default="~/catkin_gaussian/src/Gaussian-LIC/config/r3live.yaml", help="Path to config yaml")
+    parser.add_argument("--yaml_path", type=str, default="/root/catkin_gaussian/src/Gaussian-LIC/config/r3live.yaml", help="Path to config yaml")
     
     args = parser.parse_args()
     

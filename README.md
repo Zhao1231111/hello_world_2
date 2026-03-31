@@ -46,12 +46,12 @@ We test on ubuntu 20.04 with an NVIDIA RTX 3090 / 4090.
 4. Build [OpenCV 4.7.0](https://github.com/opencv/opencv/archive/refs/tags/4.7.0.tar.gz).（must be built with [opencv_contrib 4.7.0](https://github.com/opencv/opencv_contrib/archive/refs/tags/4.7.0.tar.gz) and CUDA, no installation required）
 
    ```shell
-   mkdir -p ~/Software/opencv
-   cd ~/Software/opencv
+   mkdir -p /root/Software/opencv
+   cd /root/Software/opencv
    wget https://github.com/opencv/opencv/archive/refs/tags/4.7.0.tar.gz && tar -zxvf 4.7.0.tar.gz && rm -rf 4.7.0.tar.gz
    wget https://github.com/opencv/opencv_contrib/archive/refs/tags/4.7.0.tar.gz && tar -zxvf 4.7.0.tar.gz && rm -rf 4.7.0.tar.gz
 
-   cd ~/Software/opencv/opencv-4.7.0
+   cd /root/Software/opencv/opencv-4.7.0
    mkdir build && cd build
    cmake -DCMAKE_BUILD_TYPE=RELEASE -DWITH_CUDA=ON -DWITH_CUDNN=ON -DOPENCV_DNN_CUDA=ON -DWITH_NVCUVID=ON -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-11.7 -DOPENCV_EXTRA_MODULES_PATH="../../opencv_contrib-4.7.0/modules" -DBUILD_TIFF=ON -DBUILD_ZLIB=ON -DBUILD_JASPER=ON -DBUILD_CCALIB=ON -DBUILD_JPEG=ON -DWITH_FFMPEG=ON ..
    make -j$(nproc)
@@ -61,7 +61,7 @@ We test on ubuntu 20.04 with an NVIDIA RTX 3090 / 4090.
 5. Prepare [LibTorch](https://pytorch.org/get-started/locally/).（no compilation or installation required）
 
    ```shell
-   cd ~/Software
+   cd /root/Software
    wget https://download.pytorch.org/libtorch/cu117/libtorch-cxx11-abi-shared-with-deps-2.0.1%2Bcu117.zip
    unzip libtorch-cxx11-abi-shared-with-deps-2.0.1+cu117.zip && rm -rf libtorch-cxx11-abi-shared-with-deps-2.0.1+cu117.zip
    ```
@@ -70,23 +70,23 @@ We test on ubuntu 20.04 with an NVIDIA RTX 3090 / 4090.
 6. Install Coco-LIC.
 
    ```shell
-   mkdir -p ~/catkin_coco/src
-   cd ~/catkin_coco/src
+   mkdir -p /root/catkin_coco/src
+   cd /root/catkin_coco/src
    git clone https://github.com/Livox-SDK/livox_ros_driver.git
-   cd ~/catkin_coco && catkin_make
-   cd ~/catkin_coco/src
+   cd /root/catkin_coco && catkin_make
+   cd /root/catkin_coco/src
    git clone https://github.com/APRIL-ZJU/Coco-LIC.git
-   cd ~/catkin_coco && catkin_make
+   cd /root/catkin_coco && catkin_make
    ```
 
 
 7. Install Gaussian-LIC.
 
    ```shell
-   mkdir -p ~/catkin_gaussian/src
-   cd ~/catkin_gaussian/src
+   mkdir -p /root/catkin_gaussian/src
+   cd /root/catkin_gaussian/src
    git clone https://github.com/APRIL-ZJU/Gaussian-LIC.git
-   cd ~/catkin_gaussian && catkin_make
+   cd /root/catkin_gaussian && catkin_make
    ```
 
 
@@ -101,7 +101,7 @@ Quick start on the sequence hku2 in the FAST-LIVO dataset.
 + Launch Gaussian-LIC.
 
   ```shell
-  cd ~/catkin_gaussian
+  cd /root/catkin_gaussian
   source devel/setup.bash
   roslaunch gaussian_lic fastlivo.launch  // The terminal will print "😋 Gaussian-LIC Ready!".
   ```
@@ -112,13 +112,13 @@ Quick start on the sequence hku2 in the FAST-LIVO dataset.
   Note：For real-time use and runtime analysis, please turn off the rviz in Coco-LIC by commenting the sentence `<node pkg="rviz" type="rviz" name="rviz_odom" output="log" required = "true" args="-d $(find cocolic)/config/coco.rviz" />`  in `odometry.launch`.
 
   ```shell
-  cd ~/catkin_coco
+  cd /root/catkin_coco
   source devel/setup.bash
   roslaunch cocolic odometry.launch config_path:=config/ct_odometry_fastlivo.yaml
   ```
 
 
-+ The mapping and rendering results will be saved in  `~/catkin_gaussian/src/Gaussian-LIC/result`.
++ The mapping and rendering results will be saved in  `/root/catkin_gaussian/src/Gaussian-LIC/result`.
 
 ## Citation
 

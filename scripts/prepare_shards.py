@@ -699,19 +699,19 @@ if __name__ == "__main__":
     parser.add_argument(
         "--root_dir",
         type=str,
-        default="~/autodl-tmp/dataset//gs_rg_r3live",
+        default="/root/autodl-tmp/dataset/gs_rg_r3live",
         help="Path containing dataset-* scenes",
     )
     parser.add_argument(
         "--shards_dir",
         type=str,
-        default="~/autodl-tmp/dataset//gs_rg_r3live/shards",
+        default="/root/autodl-tmp/dataset/gs_rg_r3live/shards",
         help="Directory to save train bucket_*.pt files",
     )
     parser.add_argument(
         "--val_shards_dir",
         type=str,
-        default="~/autodl-tmp/dataset//gs_rg_r3live/val_shards",
+        default="/root/autodl-tmp/dataset/gs_rg_r3live/val_shards",
         help="Directory to save validation bucket_*.pt files",
     )
     parser.add_argument(
