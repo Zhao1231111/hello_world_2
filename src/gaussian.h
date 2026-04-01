@@ -216,6 +216,10 @@ public:
     bool da3_save_depth_vis_;                  // 是否保存 DA3 对齐深度可视化
 
     bool use_Gaussian_regress_;                 //是否使用高斯回归
+    bool apply_regressed_rotation_;            // 是否采用回归得到的高斯 rotation
+    bool apply_regressed_position_;            // 是否采用回归得到的高斯位置
+    bool apply_regressed_sh_dc_;               // 是否采用回归得到的 SH DC
+    bool apply_regressed_sh_rest_;             // 是否采用回归得到的 SH REST
     bool if_prune_;
     
     int slide_window_size_;

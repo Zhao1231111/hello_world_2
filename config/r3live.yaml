@@ -37,7 +37,7 @@ hiColorLoss_threshold: 0.1
 train_times_threshold: 40
 # legacy
 opacity_threshold: 0.005
-opacity_modifier: 1.0
+opacity_modifier: 0.5
 scale_modifier: 1.0
 
 # === SPNet 深度补全配置（仅用于补点，逻辑保持不变）===
@@ -61,6 +61,10 @@ da3_align_min_points: 30  # 最小二乘对齐最少匹配点数：推荐 30~100
 da3_save_depth_vis: false  # 是否保存对齐后深度可视化（仅输出 *_da3_aligned_ls.png，便于快速排查）
 
 use_Gaussian_regress: false
+apply_regressed_rotation: false
+apply_regressed_position: false
+apply_regressed_sh_dc: false
+apply_regressed_sh_rest: false
 if_prune: false
 backbone_path: "/root/catkin_gaussian/backbone.pt"
 mlp_path: "/root/catkin_gaussian/gaussian_mlp.pt"

@@ -447,6 +447,10 @@ GaussianModel::GaussianModel(const Params& prm)
     da3_save_depth_vis_ = prm.da3_save_depth_vis;
 
     use_Gaussian_regress_ = prm.use_Gaussian_regress;
+    apply_regressed_rotation_ = prm.apply_regressed_rotation;
+    apply_regressed_position_ = prm.apply_regressed_position;
+    apply_regressed_sh_dc_ = prm.apply_regressed_sh_dc;
+    apply_regressed_sh_rest_ = prm.apply_regressed_sh_rest;
     if_prune_ = prm.if_prune;
     
     dataset_path_ = prm.dataset_path_;
@@ -986,11 +990,27 @@ void GaussianModel::initialize(const std::shared_ptr<Dataset>& dataset,
             auto res = regress_gaussians(this, init_cam, rg_input, focal);
             if (res.success) {
                 scales = res.scales;
-                rots = res.rots;
                 opacities = res.opacities;
-                features = torch::cat({res.features_dc, res.features_rest}, 2).contiguous();
-                
-                if (res.positions.defined()) {
+                auto features_dc = apply_regressed_sh_dc_
+                    ? res.features_dc
+                    : fused_color.unsqueeze(2).contiguous();
+                auto features_rest = apply_regressed_sh_rest_
+                    ? res.features_rest
+                    : torch::zeros({total_num, 3, deg_2 - 1}, fused_color.options());
+                features = torch::cat({features_dc, features_rest}, 2).contiguous();
+
+                if (apply_regressed_rotation_) {
+                    rots = res.rots;
+                } else {
+                    rots = compute_rotation_from_normals(
+                        da3_normals_for_points,
+                        da3_valid_mask_for_points,
+                        sp_result.fused_pixels,
+                        sp_result.fused_depths,
+                        init_cam);
+                }
+
+                if (apply_regressed_position_ && res.positions.defined()) {
                     fused_point_cloud = res.positions;
                 }
                 std::cout << "[MLP] Initialized " << total_num << " Gaussians with Regression." << std::endl;
@@ -2443,6 +2463,7 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
     // 组合保留条件：(透明 OR 误差大) AND (通过了空间过滤：梯度大或被体素选中)
     auto rendering_mask = torch::logical_or(is_transparent, has_high_error);
     auto regress_mask = torch::logical_and(rendering_mask, spatial_mask);
+    // auto regress_mask = rendering_mask;
     
     bool use_regress = pc->use_Gaussian_regress_ && pc->feature_extractor_ && pc->feature_extractor_->is_loaded()
         && pc->gaussian_regressor_ && pc->gaussian_regressor_->is_loaded();
@@ -2549,21 +2570,21 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
         // cv::Mat rgb_mat(H, W, CV_8UC3, rgb_marked.data_ptr<uint8_t>());
         // cv::cvtColor(rgb_mat, rgb_mat, cv::COLOR_RGB2BGR);
         
-        torch::Tensor debug_pixels = new_pixels;
-        if (traditional_extra_num > 0) {
-            debug_pixels = torch::cat({debug_pixels, traditional_pixels}, 0);
-        }
+        // torch::Tensor debug_pixels = new_pixels;
+        // if (traditional_extra_num > 0) {
+        //     debug_pixels = torch::cat({debug_pixels, traditional_pixels}, 0);
+        // }
 
-        auto new_x_cpu = debug_pixels.index({torch::indexing::Slice(), 0}).clamp(0, W - 1).to(torch::kLong).cpu();
-        auto new_y_cpu = debug_pixels.index({torch::indexing::Slice(), 1}).clamp(0, H - 1).to(torch::kLong).cpu();
+        // auto new_x_cpu = debug_pixels.index({torch::indexing::Slice(), 0}).clamp(0, W - 1).to(torch::kLong).cpu();
+        // auto new_y_cpu = debug_pixels.index({torch::indexing::Slice(), 1}).clamp(0, H - 1).to(torch::kLong).cpu();
         
-        int64_t* px = new_x_cpu.data_ptr<int64_t>();
-        int64_t* py = new_y_cpu.data_ptr<int64_t>();
-        for (int i = 0; i < new_x_cpu.size(0); ++i) {
-            // 黄色标点 (BGR: 0, 255, 255)
-            cv::circle(rgb_mat, cv::Point(px[i], py[i]), 1, cv::Scalar(0, 255, 255), -1);
-        }
-        cv::imwrite(debug_dir + "/marked/" + viewpoint_cam->image_name_, rgb_mat);
+        // int64_t* px = new_x_cpu.data_ptr<int64_t>();
+        // int64_t* py = new_y_cpu.data_ptr<int64_t>();
+        // for (int i = 0; i < new_x_cpu.size(0); ++i) {
+        //     // 黄色标点 (BGR: 0, 255, 255)
+        //     cv::circle(rgb_mat, cv::Point(px[i], py[i]), 1, cv::Scalar(0, 255, 255), -1);
+        // }
+        // cv::imwrite(debug_dir + "/marked/" + viewpoint_cam->image_name_, rgb_mat);
     }
 
     // === Phase 5: 初始化新 Gaussians 属性 ===
@@ -2603,12 +2624,26 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
                 if (res.success) {
                     main_fused_point_cloud = new_points;
                     main_scales = res.scales;
-                    main_rots = res.rots;
                     main_opacities = res.opacities;
-                    main_features_dc = res.features_dc.transpose(1, 2).contiguous();
-                    main_features_rest = res.features_rest.transpose(1, 2).contiguous();
+                    main_features_dc = pc->apply_regressed_sh_dc_
+                        ? res.features_dc.transpose(1, 2).contiguous()
+                        : new_fused_color.unsqueeze(1).contiguous();
+                    main_features_rest = pc->apply_regressed_sh_rest_
+                        ? res.features_rest.transpose(1, 2).contiguous()
+                        : torch::zeros({num_regress_new, deg_2 - 1, 3}, new_fused_color.options());
 
-                    if (res.positions.defined()) {
+                    if (pc->apply_regressed_rotation_) {
+                        main_rots = res.rots;
+                    } else {
+                        main_rots = compute_rotation_from_normals(
+                            new_normals,
+                            new_valid_normal_mask,
+                            new_pixels,
+                            new_depths,
+                            viewpoint_cam);
+                    }
+
+                    if (pc->apply_regressed_position_ && res.positions.defined()) {
                         main_fused_point_cloud = res.positions;
                     }
                     std::cout << "[MLP] Regressed " << num_regress_new << " Gaussians." << std::endl;

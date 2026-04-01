@@ -98,6 +98,14 @@ public:
         enable_normal_cull = node["enable_normal_cull"] ? node["enable_normal_cull"].as<bool>() : true;
         normal_z_cutoff = node["normal_z_cutoff"] ? node["normal_z_cutoff"].as<double>() : -0.1;
         use_Gaussian_regress = node["use_Gaussian_regress"].as<bool>();
+        apply_regressed_rotation =
+            node["apply_regressed_rotation"] ? node["apply_regressed_rotation"].as<bool>() : true;
+        apply_regressed_position =
+            node["apply_regressed_position"] ? node["apply_regressed_position"].as<bool>() : true;
+        apply_regressed_sh_dc =
+            node["apply_regressed_sh_dc"] ? node["apply_regressed_sh_dc"].as<bool>() : true;
+        apply_regressed_sh_rest =
+            node["apply_regressed_sh_rest"] ? node["apply_regressed_sh_rest"].as<bool>() : true;
         if_prune = node["if_prune"].as<bool>();
         dark_color_threshold = node["dark_color_threshold"] ? node["dark_color_threshold"].as<double>() : 0.0;
         color_gradient_threshold = node["color_gradient_threshold"] ? node["color_gradient_threshold"].as<double>() : 0.0;
@@ -239,6 +247,10 @@ public:
     bool da3_save_depth_vis;                   // 是否保存 DA3 对齐深度可视化
 
     bool use_Gaussian_regress;
+    bool apply_regressed_rotation;
+    bool apply_regressed_position;
+    bool apply_regressed_sh_dc;
+    bool apply_regressed_sh_rest;
     bool if_prune;
     double dark_color_threshold;
     double color_gradient_threshold;
