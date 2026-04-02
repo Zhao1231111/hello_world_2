@@ -311,6 +311,123 @@ void appendTrainVisualEvalHistory(const fs::path& train_dir,
         << lpips << "\n";
 }
 
+struct FrameMetricRecord
+{
+    std::string image_name;
+    int frame_id = -1;
+    int subset_index = -1;
+    double psnr = std::numeric_limits<double>::quiet_NaN();
+    double ssim = std::numeric_limits<double>::quiet_NaN();
+    double lpips = std::numeric_limits<double>::quiet_NaN();
+};
+
+struct VisualQualityEvalResult
+{
+    std::vector<FrameMetricRecord> records;
+    double mean_psnr = std::numeric_limits<double>::quiet_NaN();
+    double mean_ssim = std::numeric_limits<double>::quiet_NaN();
+    double mean_lpips = std::numeric_limits<double>::quiet_NaN();
+};
+
+double computeMeanOrNaN(double sum, size_t count)
+{
+    if (count == 0) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return sum / static_cast<double>(count);
+}
+
+void savePerFrameMetricsCsv(const fs::path& csv_path,
+                            const std::vector<FrameMetricRecord>& records)
+{
+    fs::create_directories(csv_path.parent_path());
+
+    std::ofstream ofs(csv_path);
+    if (!ofs.is_open()) {
+        std::cerr << "[Eval] 无法写入逐帧指标文件: " << csv_path << std::endl;
+        return;
+    }
+
+    ofs << "image_name,frame_id,subset_index,psnr,ssim,lpips\n";
+    ofs << std::fixed << std::setprecision(8);
+    for (const auto& record : records) {
+        ofs << record.image_name << ","
+            << record.frame_id << ","
+            << record.subset_index << ","
+            << record.psnr << ","
+            << record.ssim << ","
+            << record.lpips << "\n";
+    }
+}
+
+VisualQualityEvalResult evaluateCameraSplit(
+    const std::vector<std::shared_ptr<Camera>>& cameras,
+    const std::string& split_name,
+    std::shared_ptr<GaussianModel>& pc,
+    const torch::Tensor& bg,
+    const std::shared_ptr<torch::jit::script::Module>& lpips_module,
+    bool save_image,
+    const std::string& render_dir_path,
+    const std::string& gt_dir_path)
+{
+    VisualQualityEvalResult result;
+    double psnr_sum = 0.0;
+    double ssim_sum = 0.0;
+    double lpips_sum = 0.0;
+    size_t valid_lpips_count = 0;
+
+    for (size_t camera_idx = 0; camera_idx < cameras.size(); ++camera_idx) {
+        const auto& camera = cameras[camera_idx];
+
+        auto render_pkg = render_2d(camera, pc, bg, 1.0f, false);
+        auto rendered_image = render_pkg.rendered_image.clamp(0, 1);
+        auto gt_image = camera->original_image_.to(torch::kCUDA).clamp(0, 1);
+
+        const double psnr = loss_utils::psnr(rendered_image, gt_image).mean().item<double>();
+        const double ssim = loss_utils::ssim(rendered_image, gt_image).item<double>();
+
+        double lpips = std::numeric_limits<double>::quiet_NaN();
+        if (lpips_module != nullptr) {
+            std::vector<torch::jit::IValue> inputs;
+            inputs.push_back(rendered_image.unsqueeze(0));
+            inputs.push_back(gt_image.unsqueeze(0));
+            lpips = lpips_module->forward(inputs).toTensor().item<double>();
+            lpips_sum += lpips;
+            ++valid_lpips_count;
+        }
+
+        int frame_id = parseFrameIdFromImageName(camera->image_name_);
+        if (frame_id < 0) {
+            frame_id = static_cast<int>(camera_idx);
+        }
+
+        result.records.push_back(
+            FrameMetricRecord{
+                camera->image_name_,
+                frame_id,
+                static_cast<int>(camera_idx),
+                psnr,
+                ssim,
+                lpips,
+            });
+
+        psnr_sum += psnr;
+        ssim_sum += ssim;
+
+        if (save_image) {
+            // std::cout << "[Eval][" << split_name << "] saving " << camera->image_name_ << std::endl;
+            torch::cuda::synchronize();
+            saveTensorImageAsBgr(rendered_image, render_dir_path + "/" + camera->image_name_);
+            saveTensorImageAsBgr(gt_image, gt_dir_path + "/" + camera->image_name_);
+        }
+    }
+
+    result.mean_psnr = computeMeanOrNaN(psnr_sum, result.records.size());
+    result.mean_ssim = computeMeanOrNaN(ssim_sum, result.records.size());
+    result.mean_lpips = computeMeanOrNaN(lpips_sum, valid_lpips_count);
+    return result;
+}
+
 }  // namespace
  
 void Dataset::addFrame(Frame& cur_frame)
@@ -855,8 +972,8 @@ RegressionResult regress_gaussians(
          res.rots = reg_result.rotation;
          // MLP 当前输出的 opacity 是真实 alpha，而不是 logit。
          // 因此在 inverse_sigmoid 之前先做 clamp，避免 alpha 恰好为 0 或 1 时产生 inf。
-         auto safe_opacity = torch::clamp(reg_result.opacity, 1e-6f, 1.0f - 1e-6f);
-         res.opacities = general_utils::inverse_sigmoid(safe_opacity) * pc->opacity_modifier_;
+         auto safe_opacity = torch::clamp(reg_result.opacity, 1e-6f, 1.0f - 1e-6f) * pc->opacity_modifier_;
+         res.opacities = general_utils::inverse_sigmoid(safe_opacity);
          
          // Color
          res.features_dc = (reg_result.color_dc.transpose(1, 2) + rg_input.base_sh_.unsqueeze(2)).contiguous(); // (N, 3, 1)
@@ -3417,116 +3534,60 @@ void evaluateVisualQuality(const std::shared_ptr<Dataset>& dataset,
     if (fs::exists(gt_dir_path)) fs::remove_all(gt_dir_path);
     fs::create_directories(gt_dir_path);
 
+    const fs::path visual_quality_root = fs::path(result_path) / "visual_quality";
+    const fs::path train_metrics_csv_path = visual_quality_root / "train" / "frame_metrics.csv";
+    const fs::path test_metrics_csv_path = visual_quality_root / "test" / "frame_metrics.csv";
+
     // 设置背景颜色
     torch::Tensor bg;
     if (pc->white_background_) bg = torch::ones({3}, torch::kFloat32).cuda();
     else bg = torch::zeros({3}, torch::kFloat32).cuda();
 
     // 加载LPIPS模型用于感知质量评估
-    torch::jit::script::Module m_lpips;
-    try
-    {
-        m_lpips = torch::jit::load(lpips_path + "/lpips_alex.pt");
-        m_lpips.to(torch::kCUDA);
-    }
-    catch (const c10::Error& e)
-    {
-        std::cerr << "lpips model loading failed: " << e.what() << std::endl;
+    auto lpips_module = loadLpipsModuleCached(lpips_path);
+    if (lpips_module == nullptr) {
+        std::cerr << "[Eval] LPIPS 模型不可用，将在逐帧结果中写入 NaN。" << std::endl;
     }
 
     // === 训练视图评估 ===
     {
-        double psnrs = 0;   // 峰值信噪比累计
-        double ssims = 0;   // 结构相似性累计
-        double lpipss = 0;  // 感知相似性累计
-
-        for (const auto& train_camera : dataset->train_cameras_)
-        {
-            // 从训练视角渲染图像（使用 2DGS 渲染器）
-            auto render_pkg = render_2d(train_camera, pc, bg, 1.0f, false);
-            auto rendered_image = render_pkg.rendered_image.clamp(0, 1);  // 限制到[0,1]范围
-            auto gt_image = train_camera->original_image_.cuda().clamp(0, 1);
-
-            // 计算各种质量指标
-            double psnr = loss_utils::psnr(rendered_image, gt_image).mean().item<double>();
-            double ssim = loss_utils::ssim(rendered_image, gt_image).item<double>();
-
-            // LPIPS需要特定的输入格式
-            std::vector<torch::jit::IValue> inputs;
-            inputs.push_back(rendered_image.unsqueeze(0));  // 添加batch维度
-            inputs.push_back(gt_image.unsqueeze(0));
-            double lpips = m_lpips.forward(inputs).toTensor().item<double>();
-
-            // 累计指标
-            psnrs += psnr;
-            ssims += ssim;
-            lpipss += lpips;
-
-            // 保存图像用于可视化
-            if (save_image)
-            {
-                std::cout << "[Eval][Train] saving " << train_camera->image_name_ << std::endl;
-                torch::cuda::synchronize();
-                saveTensorImageAsBgr(rendered_image, render_dir_path + "/" + train_camera->image_name_);
-                saveTensorImageAsBgr(gt_image, gt_dir_path + "/" + train_camera->image_name_);
-            }
-        }
-
-        // 计算平均指标
-        psnrs /= dataset->train_cameras_.size();
-        ssims /= dataset->train_cameras_.size();
-        lpipss /= dataset->train_cameras_.size();
+        const auto train_eval = evaluateCameraSplit(
+            dataset->train_cameras_,
+            "Train",
+            pc,
+            bg,
+            lpips_module,
+            save_image,
+            render_dir_path,
+            gt_dir_path);
+        savePerFrameMetricsCsv(train_metrics_csv_path, train_eval.records);
 
         // 输出训练视图的评估结果
-        std::cout << std::fixed << std::setprecision(2) << "AUTO_TUNE_TRAIN_PSNR " << psnrs << std::endl;
-        std::cout << std::fixed << std::setprecision(3) << "AUTO_TUNE_TRAIN_SSIM " << ssims << std::endl;
-        std::cout << std::fixed << std::setprecision(3) << "AUTO_TUNE_TRAIN_LPIPS " << lpipss << std::endl;
+        std::cout << std::fixed << std::setprecision(2) << "AUTO_TUNE_TRAIN_PSNR " << train_eval.mean_psnr << std::endl;
+        std::cout << std::fixed << std::setprecision(3) << "AUTO_TUNE_TRAIN_SSIM " << train_eval.mean_ssim << std::endl;
+        std::cout << std::fixed << std::setprecision(3) << "AUTO_TUNE_TRAIN_LPIPS " << train_eval.mean_lpips << std::endl;
+        std::cout << "[Eval] Train 逐帧指标已保存到 " << train_metrics_csv_path << std::endl;
     }
     // === 测试视图评估（Novel View Synthesis） ===
     {
-        double psnrs = 0;   // 峰值信噪比累计
-        double ssims = 0;   // 结构相似性累计
-        double lpipss = 0;  // 感知相似性累计
+        const auto test_eval = evaluateCameraSplit(
+            dataset->test_cameras_,
+            "Test",
+            pc,
+            bg,
+            lpips_module,
+            save_image,
+            render_dir_path,
+            gt_dir_path);
+        savePerFrameMetricsCsv(test_metrics_csv_path, test_eval.records);
 
-        for (const auto& test_camera : dataset->test_cameras_)
-        {
-        // 从测试视角渲染图像（使用 2DGS 渲染器）
-        auto render_pkg = render_2d(test_camera, pc, bg, 1.0f, false);
-        auto rendered_image = render_pkg.rendered_image.clamp(0, 1);  // 限制到[0,1]范围
-        auto gt_image = test_camera->original_image_.cuda().clamp(0, 1);
-
-        // 计算各种质量指标
-        double psnr = loss_utils::psnr(rendered_image, gt_image).mean().item<double>();
-        double ssim = loss_utils::ssim(rendered_image, gt_image).item<double>();
-
-        // LPIPS需要特定的输入格式
-        std::vector<torch::jit::IValue> inputs;
-        inputs.push_back(rendered_image.unsqueeze(0));  // 添加batch维度
-        inputs.push_back(gt_image.unsqueeze(0));
-        double lpips = m_lpips.forward(inputs).toTensor().item<double>();
-
-        // 累计指标
-        psnrs += psnr;
-        ssims += ssim;
-        lpipss += lpips;
-
-        if (save_image)
-        {
-            std::cout << "[Eval][Test] saving " << test_camera->image_name_ << std::endl;
-            torch::cuda::synchronize();
-            saveTensorImageAsBgr(rendered_image, render_dir_path + "/" + test_camera->image_name_);
-            saveTensorImageAsBgr(gt_image, gt_dir_path + "/" + test_camera->image_name_);
-        }
-        }
-
-    // 计算平均指标
-    psnrs /= dataset->test_cameras_.size();
-    ssims /= dataset->test_cameras_.size();
-    lpipss /= dataset->test_cameras_.size();
-
-    // 输出测试视图的评估结果（Novel View Synthesis性能）
-    std::cout << std::fixed << std::setprecision(2) << "AUTO_TUNE_NOVEL_PSNR " << psnrs << std::endl;
-    std::cout << std::fixed << std::setprecision(3) << "AUTO_TUNE_NOVEL_SSIM " << ssims << std::endl;
-    std::cout << std::fixed << std::setprecision(3) << "AUTO_TUNE_NOVEL_LPIPS " << lpipss << std::endl;
+        // 输出测试视图的评估结果（Novel View Synthesis性能）
+        std::cout << std::fixed << std::setprecision(2) << "AUTO_TUNE_NOVEL_PSNR " << test_eval.mean_psnr << std::endl;
+        std::cout << std::fixed << std::setprecision(3) << "AUTO_TUNE_NOVEL_SSIM " << test_eval.mean_ssim << std::endl;
+        std::cout << std::fixed << std::setprecision(3) << "AUTO_TUNE_NOVEL_LPIPS " << test_eval.mean_lpips << std::endl;
+        std::cout << "[Eval] Test 逐帧指标已保存到 " << test_metrics_csv_path << std::endl;
     }
+
+    std::cout << "[Eval] 如需绘制 train/test 逐帧指标曲线，可执行: python3 src/Gaussian-LIC/scripts/plot_visual_quality_metrics.py --result_root "
+              << result_path << std::endl;
 }

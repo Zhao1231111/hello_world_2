@@ -22,7 +22,7 @@ scaling_lr: 0.005
 rotation_lr: 0.001
 lambda_dssim: 0.2
 
-apply_exposure: false
+apply_exposure: true
 exposure_lr: 0.001
 skybox_points_num: 100000  # 0 for indoor
 skybox_radius: 1000
