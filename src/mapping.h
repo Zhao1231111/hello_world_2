@@ -107,6 +107,8 @@ public:
         apply_regressed_sh_rest =
             node["apply_regressed_sh_rest"] ? node["apply_regressed_sh_rest"].as<bool>() : true;
         if_prune = node["if_prune"].as<bool>();
+        opacity_prune_forRegress =
+            node["opacity_prune_forRegress"] ? node["opacity_prune_forRegress"].as<double>() : 0.0;
         dark_color_threshold = node["dark_color_threshold"] ? node["dark_color_threshold"].as<double>() : 0.0;
         color_gradient_threshold = node["color_gradient_threshold"] ? node["color_gradient_threshold"].as<double>() : 0.0;
         voxel_size = node["voxel_size"] ? node["voxel_size"].as<double>() : 0.1;
@@ -257,6 +259,7 @@ public:
     bool apply_regressed_sh_dc;
     bool apply_regressed_sh_rest;
     bool if_prune;
+    double opacity_prune_forRegress;
     double dark_color_threshold;
     double color_gradient_threshold;
     double voxel_size;

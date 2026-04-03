@@ -221,6 +221,7 @@ public:
     bool apply_regressed_sh_dc_;               // 是否采用回归得到的 SH DC
     bool apply_regressed_sh_rest_;             // 是否采用回归得到的 SH REST
     bool if_prune_;
+    double opacity_prune_forRegress_;          // 回归高斯的 opacity 裁剪阈值
     
     int slide_window_size_;
     double hiloss_threshold_;

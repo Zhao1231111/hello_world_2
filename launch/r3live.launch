@@ -18,9 +18,9 @@
     <param name="result_path"     type="string" value="$(arg result_path)" unless="$(eval arg('result_path') == '')" />
     <param name="lpips_path"     type="string" value="$(find gaussian_lic)/src/lpips" />
     <param name="dataset_path"   type="string" value="$(arg dataset_path)" if="$(eval arg('dataset_path') != '')" />
-    <param name="generate_dataset" type="bool"  value="$(arg generate_dataset)" />
+    <!-- <param name="generate_dataset" type="bool"  value="$(arg generate_dataset)" /> -->
     <param name="dataset_target_train_times" type="int"  value="$(arg dataset_target_train_times)" />
-    <param name="use_Gaussian_regress" type="bool"  value="$(arg use_Gaussian_regress)" />
+    <!-- <param name="use_Gaussian_regress" type="bool"  value="$(arg use_Gaussian_regress)" /> -->
     <!-- <param name="opacity_modifier" type="double"  value="$(arg opacity_modifier)" /> -->
     <!-- <param name="enable_train_visual_eval" type="bool"  value="$(arg enable_train_visual_eval)" />
     <param name="train_visual_eval_every_k_train_times" type="int"  value="$(arg train_visual_eval_every_k_train_times)" />

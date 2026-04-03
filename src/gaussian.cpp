@@ -569,6 +569,7 @@ GaussianModel::GaussianModel(const Params& prm)
     apply_regressed_sh_dc_ = prm.apply_regressed_sh_dc;
     apply_regressed_sh_rest_ = prm.apply_regressed_sh_rest;
     if_prune_ = prm.if_prune;
+    opacity_prune_forRegress_ = prm.opacity_prune_forRegress;
     
     dataset_path_ = prm.dataset_path_;
     generate_dataset_ = prm.generate_dataset_;
@@ -758,7 +759,23 @@ struct RegressionResult {
     torch::Tensor features_dc;
     torch::Tensor features_rest;
     torch::Tensor positions;
+    torch::Tensor keep_mask;
+    int64_t kept_count = 0;
+    int64_t pruned_count = 0;
 };
+
+static torch::Tensor filter_tensor_by_keep_mask(
+    const torch::Tensor& tensor,
+    const torch::Tensor& keep_mask)
+{
+    if (!tensor.defined() || !keep_mask.defined()) {
+        return tensor;
+    }
+    if (tensor.dim() == 0 || tensor.size(0) != keep_mask.size(0)) {
+        return tensor;
+    }
+    return tensor.index({keep_mask});
+}
 
 static void log_tensor_validity_stats(
     const std::string& name,
@@ -836,6 +853,8 @@ static void log_regression_health(
               << ", rot_finite=" << (res.rots.defined() ? torch::isfinite(res.rots).all().item<bool>() : 0)
               << ", opacity_finite=" << (res.opacities.defined() ? torch::isfinite(res.opacities).all().item<bool>() : 0)
               << ", position_finite=" << (res.positions.defined() ? torch::isfinite(res.positions).all().item<bool>() : 0)
+              << ", kept=" << res.kept_count
+              << ", pruned=" << res.pruned_count
               << ", pred_inv_depth_invalid=" << invalid_pred_inv_depth
               << ", pred_inv_depth_non_positive=" << non_positive_inv_depth;
     if (res.rots.defined() && res.rots.numel() > 0) {
@@ -975,6 +994,17 @@ RegressionResult regress_gaussians(
     res.success = reg_result.scale.defined();
     
     if (res.success) {
+         res.keep_mask = torch::ones({total_num},
+                                     torch::TensorOptions().dtype(torch::kBool).device(reg_result.scale.device()));
+         if (pc->opacity_prune_forRegress_ > 0.0 && reg_result.opacity.defined()) {
+             auto raw_opacity = reg_result.opacity.reshape({-1});
+             res.keep_mask = torch::logical_and(
+                 torch::isfinite(raw_opacity),
+                 raw_opacity >= pc->opacity_prune_forRegress_);
+         }
+         res.kept_count = res.keep_mask.sum().item<int64_t>();
+         res.pruned_count = total_num - res.kept_count;
+
          // Scale
          auto s_norm = reg_result.scale; // (N, 2)
          // auto s_clamp = torch::clamp(s_norm, 0.1, pc->scale_modifier_);
@@ -1014,6 +1044,19 @@ RegressionResult regress_gaussians(
              auto t_wc_tensor = cam->camera_center_.to(torch::kCUDA).view({1, 3, 1}).expand({total_num, 3, 1});
              auto p_world = torch::baddbmm(t_wc_tensor, R_wc_batch, p_cam); // R_wc * P_cam + t_wc
              res.positions = p_world.squeeze(-1); // (N, 3)
+         }
+
+         if (res.pruned_count > 0) {
+             res.scales = filter_tensor_by_keep_mask(res.scales, res.keep_mask);
+             res.rots = filter_tensor_by_keep_mask(res.rots, res.keep_mask);
+             res.opacities = filter_tensor_by_keep_mask(res.opacities, res.keep_mask);
+             res.features_dc = filter_tensor_by_keep_mask(res.features_dc, res.keep_mask);
+             res.features_rest = filter_tensor_by_keep_mask(res.features_rest, res.keep_mask);
+             res.positions = filter_tensor_by_keep_mask(res.positions, res.keep_mask);
+             std::cout << "[MLP] Pruned " << res.pruned_count
+                       << " regressed Gaussians by opacity threshold "
+                       << pc->opacity_prune_forRegress_
+                       << ", kept " << res.kept_count << std::endl;
          }
 
          log_regression_health(rg_input, reg_result, res);
@@ -1119,6 +1162,16 @@ void GaussianModel::initialize(const std::shared_ptr<Dataset>& dataset,
         if (rg_input.success) {
             auto res = regress_gaussians(this, init_cam, rg_input, focal);
             if (res.success) {
+                sp_result.fused_points = filter_tensor_by_keep_mask(sp_result.fused_points, res.keep_mask);
+                sp_result.fused_colors = filter_tensor_by_keep_mask(sp_result.fused_colors, res.keep_mask);
+                fused_point_cloud = filter_tensor_by_keep_mask(fused_point_cloud, res.keep_mask);
+                fused_color = filter_tensor_by_keep_mask(fused_color, res.keep_mask);
+                da3_normals_for_points = filter_tensor_by_keep_mask(da3_normals_for_points, res.keep_mask);
+                da3_valid_mask_for_points = filter_tensor_by_keep_mask(da3_valid_mask_for_points, res.keep_mask);
+                sp_result.fused_pixels = filter_tensor_by_keep_mask(sp_result.fused_pixels, res.keep_mask);
+                sp_result.fused_depths = filter_tensor_by_keep_mask(sp_result.fused_depths, res.keep_mask);
+
+                const int64_t regressed_num = res.kept_count;
                 scales = res.scales;
                 opacities = res.opacities;
                 auto features_dc = apply_regressed_sh_dc_
@@ -1126,7 +1179,7 @@ void GaussianModel::initialize(const std::shared_ptr<Dataset>& dataset,
                     : fused_color.unsqueeze(2).contiguous();
                 auto features_rest = apply_regressed_sh_rest_
                     ? res.features_rest
-                    : torch::zeros({total_num, 3, deg_2 - 1}, fused_color.options());
+                    : torch::zeros({regressed_num, 3, deg_2 - 1}, fused_color.options());
                 features = torch::cat({features_dc, features_rest}, 2).contiguous();
 
                 if (apply_regressed_rotation_) {
@@ -1143,7 +1196,7 @@ void GaussianModel::initialize(const std::shared_ptr<Dataset>& dataset,
                 if (apply_regressed_position_ && res.positions.defined()) {
                     fused_point_cloud = res.positions;
                 }
-                std::cout << "[MLP] Initialized " << total_num << " Gaussians with Regression." << std::endl;
+                std::cout << "[MLP] Initialized " << regressed_num << " Gaussians with Regression." << std::endl;
             }
             else {
                 std::cerr << "[GaussianModel] Regression failed!" << std::endl;
@@ -1248,7 +1301,7 @@ void GaussianModel::initialize(const std::shared_ptr<Dataset>& dataset,
     int64_t* scene_ids_ptr = scene_ids.data_ptr<int64_t>();
     init_cam->added_ids_.assign(scene_ids_ptr, scene_ids_ptr + scene_ids.size(0));
     
-    int num_supplement = scene_ids.size(0) - num_lidar; 
+    int num_supplement = std::max<int>(0, scene_ids.size(0) - num_lidar);
 
     std::cout << std::fixed << std::setprecision(2) 
             << "\033[1;37m Init Map with " 
@@ -2753,31 +2806,45 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
             if (rg_input.success) {
                 auto res = regress_gaussians(pc.get(), viewpoint_cam, rg_input, focal);
                 if (res.success) {
-                    main_fused_point_cloud = new_points;
+                    auto kept_new_points = filter_tensor_by_keep_mask(new_points, res.keep_mask);
+                    auto kept_new_fused_color = filter_tensor_by_keep_mask(new_fused_color, res.keep_mask);
+                    auto kept_new_depths = filter_tensor_by_keep_mask(new_depths, res.keep_mask);
+                    auto kept_new_normals = filter_tensor_by_keep_mask(new_normals, res.keep_mask);
+                    auto kept_new_pixels = filter_tensor_by_keep_mask(new_pixels, res.keep_mask);
+                    auto kept_new_valid_normal_mask = filter_tensor_by_keep_mask(new_valid_normal_mask, res.keep_mask);
+                    const int64_t kept_regress_num = res.kept_count;
+
+                    main_fused_point_cloud = kept_new_points;
                     main_scales = res.scales;
                     main_opacities = res.opacities;
                     main_features_dc = pc->apply_regressed_sh_dc_
                         ? res.features_dc.transpose(1, 2).contiguous()
-                        : new_fused_color.unsqueeze(1).contiguous();
+                        : kept_new_fused_color.unsqueeze(1).contiguous();
                     main_features_rest = pc->apply_regressed_sh_rest_
                         ? res.features_rest.transpose(1, 2).contiguous()
-                        : torch::zeros({num_regress_new, deg_2 - 1, 3}, new_fused_color.options());
+                        : torch::zeros({kept_regress_num, deg_2 - 1, 3}, kept_new_fused_color.options());
 
                     if (pc->apply_regressed_rotation_) {
                         main_rots = res.rots;
                     } else {
                         main_rots = compute_rotation_from_normals(
-                            new_normals,
-                            new_valid_normal_mask,
-                            new_pixels,
-                            new_depths,
+                            kept_new_normals,
+                            kept_new_valid_normal_mask,
+                            kept_new_pixels,
+                            kept_new_depths,
                             viewpoint_cam);
                     }
 
                     if (pc->apply_regressed_position_ && res.positions.defined()) {
                         main_fused_point_cloud = res.positions;
                     }
-                    std::cout << "[MLP] Regressed " << num_regress_new << " Gaussians." << std::endl;
+                    new_points = kept_new_points;
+                    new_fused_color = kept_new_fused_color;
+                    new_depths = kept_new_depths;
+                    new_normals = kept_new_normals;
+                    new_pixels = kept_new_pixels;
+                    new_valid_normal_mask = kept_new_valid_normal_mask;
+                    std::cout << "[MLP] Regressed " << kept_regress_num << " Gaussians." << std::endl;
                 }
                 else {
                     std::cerr << "[GaussianModel] Regression failed!" << std::endl;
@@ -2890,23 +2957,44 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
         viewpoint_cam->raw_valid_mask_ = new_valid_normal_mask.cpu();
         viewpoint_cam->raw_colors_ = new_fused_color.cpu();
         viewpoint_cam->raw_focal_ = focal;
-    }        
+    }
+
+    const int64_t total_inserted = fused_point_cloud.size(0);
+    if (total_inserted == 0) {
+        viewpoint_cam->added_ids_.clear();
+
+        int current_idx = dataset->train_cameras_.size() - 1;
+        int limit_idx = current_idx - pc->slide_window_size_;
+        if (limit_idx >= 0 && limit_idx < dataset->train_cameras_.size()) {
+            auto& cam_to_clear = dataset->train_cameras_[limit_idx];
+            if (cam_to_clear->feature_map_.defined()) {
+                cam_to_clear->feature_map_ = torch::Tensor();
+            }
+        }
+
+        dataset->pointcloud_.clear();
+        dataset->pointcolor_.clear();
+        dataset->pointdepth_.clear();
+
+        std::cout << "[InsertSummary] regress=0, traditional_extra=0, total=0 (all regressed candidates were pruned)." << std::endl;
+        return;
+    }
 
     // Generate new IDs
     int64_t start_id = pc->max_id_;
-    torch::Tensor new_ids = torch::arange(start_id, start_id + total_num, torch::kInt64).view({total_num, 1}).cuda();
-    pc->max_id_ += total_num;
+    torch::Tensor new_ids = torch::arange(start_id, start_id + total_inserted, torch::kInt64).view({total_inserted, 1}).cuda();
+    pc->max_id_ += total_inserted;
 
     // Store IDs as vector
     auto ids_cpu = new_ids.cpu().contiguous();
     int64_t* ids_ptr = ids_cpu.data_ptr<int64_t>();
-    viewpoint_cam->added_ids_.assign(ids_ptr, ids_ptr + total_num);
+    viewpoint_cam->added_ids_.assign(ids_ptr, ids_ptr + total_inserted);
 
     // 将新的高斯点添加到模型中，并更新优化器状态
     pc->densificationPostfix(fused_point_cloud, features_dc, features_rest, opacities, scales, rots, new_ids);
 
     // 输出新增高斯点数量信息
-    std::cout << "[InsertSummary] regress=" << num_regress_new
+    std::cout << "[InsertSummary] regress=" << main_fused_point_cloud.size(0)
               << ", traditional_extra=" << traditional_extra_num
               << ", total=" << fused_point_cloud.size(0) << std::endl;
     std::cout << std::fixed << std::setprecision(2)

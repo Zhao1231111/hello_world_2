@@ -37,8 +37,11 @@ hiColorLoss_threshold: 0.1
 train_times_threshold: 40
 # legacy
 opacity_threshold: 0.005
-opacity_modifier: 0.4 # 已更改为 clamp(max = 1- modifier)
+
+opacity_modifier: 0.2 # 已更改为 clamp(max = 1- modifier)
 opacity_modifier_up: 1e-6 # opacity clamp 下界
+opacity_prune_forRegress: 1e-5
+
 scale_modifier: 5000.0 # 暂时去掉！ 已更改为 clamp(max = modifier)
 
 # === SPNet 深度补全配置（仅用于补点，逻辑保持不变）===
@@ -61,7 +64,7 @@ da3_conf_threshold: 0.6   # 置信度阈值[0,1]：推荐 0.5~0.8，可调 0.0~0
 da3_align_min_points: 30  # 最小二乘对齐最少匹配点数：推荐 30~100，可调 10~300
 da3_save_depth_vis: false  # 是否保存对齐后深度可视化（仅输出 *_da3_aligned_ls.png，便于快速排查）
 
-use_Gaussian_regress: false
+use_Gaussian_regress: true
 apply_regressed_rotation: true
 apply_regressed_position: false
 apply_regressed_sh_dc: true
@@ -69,7 +72,7 @@ apply_regressed_sh_rest: false
 if_prune: false
 backbone_path: "/root/catkin_gaussian/backbone.pt"
 mlp_path: "/root/catkin_gaussian/gaussian_mlp.pt"
-generate_dataset: true
+generate_dataset: false
 dataset_target_train_times: 40
 
 dataset_path: "/root/autodl-tmp/dataset/gs_rg_r3live/dataset"

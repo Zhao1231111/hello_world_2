@@ -231,6 +231,12 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
         prm.use_Gaussian_regress = ros_use_Gaussian_regress_;
         std::cout << "\033[1;32m [Config] Overrode use_Gaussian_regress from ROS launch param: " << (ros_use_Gaussian_regress_ ? "true" : "false") << " \033[0m" << std::endl;
     }
+    double ros_opacity_prune_forRegress;
+    if (ros::param::get("~opacity_prune_forRegress", ros_opacity_prune_forRegress)) {
+        prm.opacity_prune_forRegress = ros_opacity_prune_forRegress;
+        std::cout << "\033[1;32m [Config] Overrode opacity_prune_forRegress from ROS launch param: "
+                  << ros_opacity_prune_forRegress << " \033[0m" << std::endl;
+    }
     double ros_opacity_modifier;
     if (ros::param::get("~opacity_modifier", ros_opacity_modifier)) {
         prm.opacity_modifier = ros_opacity_modifier;
