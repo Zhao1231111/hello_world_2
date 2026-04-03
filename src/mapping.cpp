@@ -300,11 +300,7 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
         }
     }
 
-    // Dataset Generation Parameters
     bool generate_dataset = prm.generate_dataset_;
-    if (generate_dataset && prm.dataset_target_train_times <= 0) {
-        throw std::runtime_error("[Dataset] dataset_target_train_times 必须大于 0。");
-    }
 
     std::chrono::steady_clock::time_point t_start, t_end;
     double total_mapping_time = 0;
@@ -468,11 +464,9 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
     evaluateVisualQuality(dataset, gaussians, result_path, lpips_path, false);    
     
     if (generate_dataset) {
-        // 现在的数据集标签来自“在线训练到指定 train_times 时的中间态快照”，
-        // 不再依赖额外的离线优化阶段。
         std::cout << "[Dataset] Saving Final Dataset..." << std::endl;
         evaluateVisualQuality(dataset, gaussians, result_path, lpips_path, true); // Final eval
-        gaussians->saveDataset(prm.dataset_path_, dataset, prm.dataset_target_train_times);
+        gaussians->saveDataset(prm.dataset_path_, dataset);
     }
     else {
         evaluateVisualQuality(dataset, gaussians, result_path, lpips_path, true);

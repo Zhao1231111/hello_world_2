@@ -146,8 +146,6 @@ public:
     void saveMap(const std::string& result_path);
     void saveCameraRegressData(const std::shared_ptr<Camera>& cam, const std::string& result_path, int frame_idx);
     void saveDataset(const std::string& path, const std::shared_ptr<Dataset>& dataset, int iter = -1);
-    bool captureDatasetTargetSnapshot(const std::shared_ptr<Camera>& cam);
-    void saveDatasetTargetMap(const std::string& result_path, const std::shared_ptr<Dataset>& dataset);
 
     void trainingSetup();
 
@@ -291,7 +289,6 @@ public:
     std::string result_path_;
     std::string lpips_path_;
     bool generate_dataset_; 
-    int dataset_target_train_times_;
     double opacity_modifier_;
     double scale_modifier_;
     double opacity_modifier_up_;

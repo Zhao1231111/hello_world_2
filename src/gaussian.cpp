@@ -71,92 +71,6 @@ std::string formatTrainTimesStem(int train_times)
     return oss.str();
 }
 
-std::string getDatasetTargetPlyFilename(int train_times)
-{
-    std::ostringstream oss;
-    oss << "point_cloud_train_times_" << std::setw(4) << std::setfill('0') << train_times << ".ply";
-    return oss.str();
-}
-
-void saveGaussianPlyFromTensors(
-    const std::string& ply_path,
-    const torch::Tensor& xyz_cpu,
-    const torch::Tensor& f_dc_cpu,
-    const torch::Tensor& f_rest_cpu,
-    const torch::Tensor& opacity_cpu,
-    const torch::Tensor& scale_cpu,
-    const torch::Tensor& rotation_cpu,
-    const torch::Tensor& ids_cpu)
-{
-    std::filebuf fb_binary;
-    fb_binary.open(ply_path, std::ios::out | std::ios::binary);
-    std::ostream outstream_binary(&fb_binary);
-
-    tinyply::PlyFile result_file;
-
-    result_file.add_properties_to_element(
-        "vertex", {"x", "y", "z"},
-        tinyply::Type::FLOAT32, xyz_cpu.size(0),
-        reinterpret_cast<uint8_t*>(xyz_cpu.data_ptr<float>()),
-        tinyply::Type::INVALID, 0);
-
-    std::vector<std::string> property_names_f_dc(f_dc_cpu.size(1));
-    for (int i = 0; i < f_dc_cpu.size(1); ++i) {
-        property_names_f_dc[i] = "f_dc_" + std::to_string(i);
-    }
-    result_file.add_properties_to_element(
-        "vertex", property_names_f_dc,
-        tinyply::Type::FLOAT32, f_dc_cpu.size(0),
-        reinterpret_cast<uint8_t*>(f_dc_cpu.data_ptr<float>()),
-        tinyply::Type::INVALID, 0);
-
-    std::vector<std::string> property_names_f_rest(f_rest_cpu.size(1));
-    for (int i = 0; i < f_rest_cpu.size(1); ++i) {
-        property_names_f_rest[i] = "f_rest_" + std::to_string(i);
-    }
-    result_file.add_properties_to_element(
-        "vertex", property_names_f_rest,
-        tinyply::Type::FLOAT32, f_rest_cpu.size(0),
-        reinterpret_cast<uint8_t*>(f_rest_cpu.data_ptr<float>()),
-        tinyply::Type::INVALID, 0);
-
-    result_file.add_properties_to_element(
-        "vertex", {"opacity"},
-        tinyply::Type::FLOAT32, opacity_cpu.size(0),
-        reinterpret_cast<uint8_t*>(opacity_cpu.data_ptr<float>()),
-        tinyply::Type::INVALID, 0);
-
-    std::vector<std::string> property_names_scale(scale_cpu.size(1));
-    for (int i = 0; i < scale_cpu.size(1); ++i) {
-        property_names_scale[i] = "scale_" + std::to_string(i);
-    }
-    result_file.add_properties_to_element(
-        "vertex", property_names_scale,
-        tinyply::Type::FLOAT32, scale_cpu.size(0),
-        reinterpret_cast<uint8_t*>(scale_cpu.data_ptr<float>()),
-        tinyply::Type::INVALID, 0);
-
-    std::vector<std::string> property_names_rotation(rotation_cpu.size(1));
-    for (int i = 0; i < rotation_cpu.size(1); ++i) {
-        property_names_rotation[i] = "rot_" + std::to_string(i);
-    }
-    result_file.add_properties_to_element(
-        "vertex", property_names_rotation,
-        tinyply::Type::FLOAT32, rotation_cpu.size(0),
-        reinterpret_cast<uint8_t*>(rotation_cpu.data_ptr<float>()),
-        tinyply::Type::INVALID, 0);
-
-    torch::Tensor ids_int32 = ids_cpu.to(torch::kInt32).contiguous();
-    result_file.add_properties_to_element(
-        "vertex", {"id"},
-        tinyply::Type::INT32, ids_int32.size(0),
-        reinterpret_cast<uint8_t*>(ids_int32.data_ptr<int>()),
-        tinyply::Type::INVALID, 0);
-
-    result_file.write(outstream_binary, true);
-    fb_binary.close();
-}
-
 void saveTensorImageAsBgr(const torch::Tensor& image_chw, const std::string& image_path)
 {
     auto image_u8 = image_chw.detach().to(torch::kCPU).permute({1, 2, 0}).contiguous();
@@ -192,12 +106,6 @@ void logDatasetTensorHealth(const std::string& name, const torch::Tensor& tensor
                   << ", max=" << valid_flat.max().item<float>();
     }
     std::cout << std::endl;
-}
-
-void logSnapshotStage(const std::shared_ptr<Camera>& cam, const std::string& stage)
-{
-    std::cout << "[Dataset][Snapshot] frame=" << (cam ? cam->image_name_ : std::string("unknown"))
-              << ", stage=" << stage << std::endl;
 }
 
 std::shared_ptr<torch::jit::script::Module> loadLpipsModuleCached(const std::string& lpips_path)
@@ -573,7 +481,6 @@ GaussianModel::GaussianModel(const Params& prm)
     
     dataset_path_ = prm.dataset_path_;
     generate_dataset_ = prm.generate_dataset_;
-    dataset_target_train_times_ = prm.dataset_target_train_times;
     opacity_modifier_ = prm.opacity_modifier;
     scale_modifier_ = prm.scale_modifier;
     opacity_modifier_up_ = prm.opacity_modifier_up;
@@ -1383,195 +1290,11 @@ void GaussianModel::saveCameraRegressData(const std::shared_ptr<Camera>& cam, co
     // Keep added_ids_ in case it is still needed somewhere (it's small)
 }
 
-bool GaussianModel::captureDatasetTargetSnapshot(const std::shared_ptr<Camera>& cam)
-{
-    if (!generate_dataset_ || !cam) {
-        return false;
-    }
-    if (cam->target_snapshot_ready_) {
-        return true;
-    }
-    if (cam->added_ids_.empty()) {
-        std::cout << "[Dataset] 跳过快照：当前帧没有新增高斯。" << std::endl;
-        return false;
-    }
-
-    logSnapshotStage(cam, "begin");
-
-    // 这一步是专门为了抓异步 CUDA 错误。
-    // 如果前面的 backward / optimizer / densify 已经把某个 kernel 打崩，
-    // 这里会尽量在快照入口就暴露出来，而不是混到后面的张量拷贝里。
-    torch::cuda::synchronize();
-    logSnapshotStage(cam, "after_pre_sync");
-
-    const int64_t model_num = this->xyz_.size(0);
-    const int64_t global_id_num = this->global_ids_.size(0);
-    std::cout << "[Dataset][Snapshot] model_num=" << model_num
-              << ", global_id_num=" << global_id_num
-              << ", added_num=" << cam->added_ids_.size()
-              << std::endl;
-
-    if (global_id_num != model_num) {
-        std::cerr << "[Dataset][Snapshot] 警告：global_ids_ 与 xyz_ 数量不一致，"
-                  << " global_ids=" << global_id_num
-                  << ", xyz=" << model_num << std::endl;
-    }
-
-    // 这里显式做一次 id -> 当前行号 的映射。
-    // 写法稍微笨一点，但逻辑直观，也能避免以后打开 prune 时直接按 id 索引出错。
-    logSnapshotStage(cam, "copy_global_ids_to_cpu");
-    auto global_ids_cpu = this->global_ids_.flatten().to(torch::kCPU).contiguous();
-    const int64_t* global_ids_ptr = global_ids_cpu.data_ptr<int64_t>();
-    std::unordered_map<int64_t, int64_t> id_to_row;
-    id_to_row.reserve(global_ids_cpu.size(0));
-    for (int64_t row = 0; row < global_ids_cpu.size(0); ++row) {
-        id_to_row[global_ids_ptr[row]] = row;
-    }
-    logSnapshotStage(cam, "global_ids_ready");
-
-    std::vector<int64_t> rows;
-    rows.reserve(cam->added_ids_.size());
-    for (int64_t id_val : cam->added_ids_) {
-        auto it = id_to_row.find(id_val);
-        if (it == id_to_row.end()) {
-            std::cerr << "[Dataset] 快照失败：高斯 id " << id_val
-                      << " 当前在模型中找不到。请确认 prune 是否已关闭。" << std::endl;
-            return false;
-        }
-        rows.push_back(it->second);
-    }
-
-    int64_t min_row = rows.empty() ? -1 : rows.front();
-    int64_t max_row = rows.empty() ? -1 : rows.front();
-    for (int64_t row : rows) {
-        if (row < min_row) min_row = row;
-        if (row > max_row) max_row = row;
-    }
-    std::cout << "[Dataset][Snapshot] matched_rows=" << rows.size()
-              << ", min_row=" << min_row
-              << ", max_row=" << max_row
-              << std::endl;
-
-    logSnapshotStage(cam, "build_row_tensor");
-    auto row_tensor = torch::tensor(rows, torch::TensorOptions().dtype(torch::kInt64)).to(torch::kCUDA);
-    torch::cuda::synchronize();
-    logDatasetTensorHealth("snapshot.row_tensor", row_tensor);
-
-    // 中间态 GT PLY 需要与现有 point_cloud.ply 字段格式完全一致，
-    // 因此这里直接保存模型内部参数格式：
-    // - f_dc / f_rest 使用扁平化后的 PLY 形状
-    // - opacity 保存内部 logit，而不是 sigmoid 后的 alpha
-    logSnapshotStage(cam, "index_target_tensors");
-    cam->target_xyz_ = this->xyz_.index({row_tensor, torch::indexing::Slice()}).detach().cpu();
-    logDatasetTensorHealth("snapshot.target_xyz", cam->target_xyz_);
-    cam->target_f_dc_ = this->features_dc_.index({row_tensor, torch::indexing::Slice(), torch::indexing::Slice()})
-                            .detach().transpose(1, 2).flatten(1).contiguous().cpu();
-    logDatasetTensorHealth("snapshot.target_f_dc", cam->target_f_dc_);
-    cam->target_f_rest_ = this->features_rest_.index({row_tensor, torch::indexing::Slice(), torch::indexing::Slice()})
-                              .detach().transpose(1, 2).flatten(1).contiguous().cpu();
-    logDatasetTensorHealth("snapshot.target_f_rest", cam->target_f_rest_);
-    cam->target_opacity_ = this->opacity_.index({row_tensor, torch::indexing::Slice()}).detach().cpu();
-    logDatasetTensorHealth("snapshot.target_opacity", cam->target_opacity_);
-    cam->target_scale_ = this->scaling_.index({row_tensor, torch::indexing::Slice()}).detach().cpu();
-    logDatasetTensorHealth("snapshot.target_scale", cam->target_scale_);
-    cam->target_rot_ = this->rotation_.index({row_tensor, torch::indexing::Slice()}).detach().cpu();
-    logDatasetTensorHealth("snapshot.target_rot", cam->target_rot_);
-    torch::cuda::synchronize();
-    logSnapshotStage(cam, "target_tensors_ready");
-    cam->target_snapshot_ready_ = true;
-
-    std::cout << "[Dataset] 已捕获中间训练态快照，新增高斯数="
-              << cam->added_ids_.size()
-              << ", target_train_times=" << dataset_target_train_times_
-              << std::endl;
-    return true;
-}
-
-void GaussianModel::saveDatasetTargetMap(const std::string& result_path, const std::shared_ptr<Dataset>& dataset)
-{
-    if (!generate_dataset_) {
-        return;
-    }
-
-    std::vector<torch::Tensor> xyz_list;
-    std::vector<torch::Tensor> f_dc_list;
-    std::vector<torch::Tensor> f_rest_list;
-    std::vector<torch::Tensor> opacity_list;
-    std::vector<torch::Tensor> scale_list;
-    std::vector<torch::Tensor> rot_list;
-    std::vector<torch::Tensor> id_list;
-
-    int ready_frame_count = 0;
-    int skipped_frame_count = 0;
-
-    for (size_t i = 0; i < dataset->train_cameras_.size(); ++i) {
-        const auto& cam = dataset->train_cameras_[i];
-        if (!cam || cam->added_ids_.empty()) {
-            continue;
-        }
-        if (!cam->target_snapshot_ready_) {
-            skipped_frame_count++;
-            std::cout << "[Dataset] 跳过 frame " << i
-                      << "：结束时仍未达到 target_train_times="
-                      << dataset_target_train_times_ << std::endl;
-            continue;
-        }
-
-        const int64_t point_num = static_cast<int64_t>(cam->added_ids_.size());
-        if (!cam->target_xyz_.defined() || cam->target_xyz_.size(0) != point_num) {
-            std::cerr << "[Dataset] 跳过 frame " << i
-                      << "：快照张量与 added_ids 数量不一致。" << std::endl;
-            skipped_frame_count++;
-            continue;
-        }
-
-        auto ids_tensor = torch::from_blob(
-            const_cast<int64_t*>(cam->added_ids_.data()),
-            {point_num},
-            torch::TensorOptions().dtype(torch::kInt64)).clone();
-
-        xyz_list.push_back(cam->target_xyz_);
-        f_dc_list.push_back(cam->target_f_dc_);
-        f_rest_list.push_back(cam->target_f_rest_);
-        opacity_list.push_back(cam->target_opacity_);
-        scale_list.push_back(cam->target_scale_);
-        rot_list.push_back(cam->target_rot_);
-        id_list.push_back(ids_tensor);
-        ready_frame_count++;
-    }
-
-    if (xyz_list.empty()) {
-        throw std::runtime_error("[Dataset] 没有任何训练帧达到 dataset_target_train_times，无法生成中间态 GT PLY。");
-    }
-
-    auto xyz = torch::cat(xyz_list, 0).contiguous();
-    auto f_dc = torch::cat(f_dc_list, 0).contiguous();
-    auto f_rest = torch::cat(f_rest_list, 0).contiguous();
-    auto opacity = torch::cat(opacity_list, 0).contiguous();
-    auto scale = torch::cat(scale_list, 0).contiguous();
-    auto rot = torch::cat(rot_list, 0).contiguous();
-    auto ids = torch::cat(id_list, 0).contiguous();
-
-    const std::string ply_path = result_path + "/" + getDatasetTargetPlyFilename(dataset_target_train_times_);
-    saveGaussianPlyFromTensors(ply_path, xyz, f_dc, f_rest, opacity, scale, rot, ids);
-
-    std::cout << "\033[1;32m [Dataset] Saved intermediate GT PLY to "
-              << ply_path
-              << " (ready_frames=" << ready_frame_count
-              << ", skipped_frames=" << skipped_frame_count
-              << ", points=" << xyz.size(0) << ") \033[0m"
-              << std::endl;
-}
-
 void GaussianModel::saveDataset(const std::string& path, const std::shared_ptr<Dataset>& dataset, int iter)
 {
     (void)iter;
     std::string base_path = path;
     if (!fs::exists(base_path)) fs::create_directories(base_path);
-
-    if (generate_dataset_ && dataset_target_train_times_ <= 0) {
-        throw std::runtime_error("[Dataset] dataset_target_train_times 必须大于 0。");
-    }
     
     // Save Cameras and Seeds
     std::string train_meta_path = base_path + "/train_cameras.json";
@@ -1594,21 +1317,7 @@ void GaussianModel::saveDataset(const std::string& path, const std::shared_ptr<D
         for (size_t i = 0; i < dataset->train_cameras_.size(); ++i) {
             auto K_cam = dataset->train_cameras_[i];
             if (!K_cam->raw_points_.defined()) continue; // Skip if no raw data suspended
-            if (!K_cam->target_snapshot_ready_) {
-                std::cout << "[Dataset] 跳过 frame " << i
-                          << " 的回归输入导出：该帧尚未达到 target_train_times="
-                          << dataset_target_train_times_ << std::endl;
 
-                K_cam->raw_points_ = torch::Tensor();
-                K_cam->raw_depths_ = torch::Tensor();
-                K_cam->raw_valid_mask_ = torch::Tensor();
-                K_cam->raw_pixels_ = torch::Tensor();
-                K_cam->raw_normals_ = torch::Tensor();
-                K_cam->raw_colors_ = torch::Tensor();
-                K_cam->raw_focal_ = 0.0f;
-                continue;
-            }
-            
             // 1. 生成严格属于该帧之前的几何掩码 (免疫 Prune)
             int64_t K_min_id = 0;
             if (!K_cam->added_ids_.empty()) {
@@ -1692,9 +1401,6 @@ void GaussianModel::saveDataset(const std::string& path, const std::shared_ptr<D
 
     for (size_t i = 0; i < dataset->train_cameras_.size(); ++i) {
         auto cam = dataset->train_cameras_[i];
-        if (generate_dataset_ && !cam->target_snapshot_ready_) {
-            continue;
-        }
 
         // Save Image (RGB -> BGR -> 8U)
         std::string img_filename = "train_" + std::to_string(i) + ".png";
@@ -1723,14 +1429,7 @@ void GaussianModel::saveDataset(const std::string& path, const std::shared_ptr<D
         train_meta << "    \"rotation\": [" << q.w() << ", " << q.x() << ", " << q.y() << ", " << q.z() << "],\n"; 
         train_meta << "    \"seed_file\": \"" << seed_filename_base << "\"\n";
 
-        bool has_next = false;
-        for (size_t j = i + 1; j < dataset->train_cameras_.size(); ++j) {
-            if (!generate_dataset_ || dataset->train_cameras_[j]->target_snapshot_ready_) {
-                has_next = true;
-                break;
-            }
-        }
-        if (has_next) train_meta << "  },\n";
+        if (i < dataset->train_cameras_.size() - 1) train_meta << "  },\n";
         else train_meta << "  }\n";
     }
     train_meta << "]\n";
@@ -1772,12 +1471,7 @@ void GaussianModel::saveDataset(const std::string& path, const std::shared_ptr<D
     test_meta.close();
     
     std::cout << "\033[1;32m [Dataset] Saved dataset to " << base_path << " \033[0m" << std::endl;
-
-    // 先保存中间训练态的 GT PLY，供 prepare_shards.py 读取。
-    // 这份文件的字段格式与 point_cloud.ply 保持一致，只是参数来自 train_times=K 时的在线快照。
-    this->saveDatasetTargetMap(base_path, dataset);
-
-    // this->saveMap(base_path);
+    this->saveMap(base_path);
     std::cout << "\033[1;32m [Dataset] Saved map to " << base_path << " \033[0m" << std::endl;
 }
 
@@ -3383,18 +3077,6 @@ double optimize(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<Gaussia
         // Update keyframe attributes
         pc->keyframe_train_times_[idx]++;
         pc->keyframe_loss_[idx] = loss.item<double>();
-
-        // 蒸馏数据集模式下，当训练帧第一次训练到目标次数时，
-        // 立即把这批新高斯当前的参数快照下来。
-        // 这样后面导出的 GT PLY 就不再依赖“最终 fully trained 的终态”。
-        if (pc->generate_dataset_ &&
-            idx < train_camera_num &&
-            pc->dataset_target_train_times_ > 0 &&
-            pc->keyframe_train_times_[idx] == pc->dataset_target_train_times_)
-        {
-            torch::NoGradGuard no_grad;
-            pc->captureDatasetTargetSnapshot(viewpoint_cam);
-        }
 
         // === 致密化控制（由全局选择器决定） ===
         if (selected_densify_set.count(idx) > 0)

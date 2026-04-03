@@ -196,18 +196,6 @@ public:
     torch::Tensor regress_dis_;        // (N, 1)
     std::vector<int64_t> added_ids_;   // (N)
 
-    // === 蒸馏数据集：中间训练态快照 ===
-    // 当该帧的 train_times 达到目标值时，
-    // 我们会把这一批新插入高斯在“当下”的参数快照保存下来，
-    // 供后续导出中间态 GT PLY 使用。
-    bool target_snapshot_ready_ = false;
-    torch::Tensor target_xyz_;         // (N, 3)
-    torch::Tensor target_f_dc_;        // (N, 3)
-    torch::Tensor target_f_rest_;      // (N, C)
-    torch::Tensor target_opacity_;     // (N, 1), 与 point_cloud.ply 一致，保存内部 logit
-    torch::Tensor target_scale_;       // (N, 2)
-    torch::Tensor target_rot_;         // (N, 4)
-
     // === 当前帧 IEKF 位姿优化状态 ===
     Eigen::Matrix3d R_cw_pred_ = Eigen::Matrix3d::Identity();  // 当前帧进入滤波前的预测位姿
     Eigen::Vector3d t_cw_pred_ = Eigen::Vector3d::Zero();

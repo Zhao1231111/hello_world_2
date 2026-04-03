@@ -73,7 +73,6 @@ if_prune: false
 backbone_path: "/root/catkin_gaussian/backbone.pt"
 mlp_path: "/root/catkin_gaussian/gaussian_mlp.pt"
 generate_dataset: false
-dataset_target_train_times: 40
 
 dataset_path: "/root/autodl-tmp/dataset/gs_rg_r3live/dataset"
 
