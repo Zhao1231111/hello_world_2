@@ -293,7 +293,10 @@ public:
     int dataset_target_train_times_;
     double opacity_modifier_;
     double scale_modifier_;
+    double opacity_modifier_up_;
     bool extend_debug_;
+    bool if_tileCull_in_extend_ = false;
+    bool if_full_regress_ = false;
 
     // === Backward Pose Optimization ===
     bool enable_pose_refinement_ = false;

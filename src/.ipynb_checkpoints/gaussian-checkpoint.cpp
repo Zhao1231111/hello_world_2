@@ -575,7 +575,6 @@ GaussianModel::GaussianModel(const Params& prm)
     dataset_target_train_times_ = prm.dataset_target_train_times;
     opacity_modifier_ = prm.opacity_modifier;
     scale_modifier_ = prm.scale_modifier;
-    opacity_modifier_up_ = prm.opacity_modifier_up;
     extend_debug_ = prm.extend_debug;
     if_tileCull_in_extend_ = prm.if_tileCull_in_extend;
     if_full_regress_ = prm.if_full_regress;
@@ -842,15 +841,6 @@ static void log_regression_health(
         std::cout << ", rot_norm_min=" << rot_norm_min
                   << ", rot_norm_max=" << rot_norm_max;
     }
-    if (res.opacities.defined() && res.opacities.numel() > 0){
-        auto opacity_min = res.opacities.min().item<double>();
-        auto opacity_max = res.opacities.max().item<double>();
-        // 2. 映射回物理空间 (Real Opacity: [0, 1])
-        auto real_opacity_min = torch::sigmoid(torch::tensor(opacity_min)).item<double>();
-        auto real_opacity_max = torch::sigmoid(torch::tensor(opacity_max)).item<double>();
-        std::cout << ", opac_real_min=" << real_opacity_min
-                  << ", opac_real_max=" << real_opacity_max;
-    }
     std::cout << std::endl;
 
     if (!need_detail_log) {
@@ -985,7 +975,7 @@ RegressionResult regress_gaussians(
          res.rots = reg_result.rotation;
          // MLP 当前输出的 opacity 是真实 alpha，而不是 logit。
          // 因此在 inverse_sigmoid 之前先做 clamp，避免 alpha 恰好为 0 或 1 时产生 inf。
-         auto safe_opacity = torch::clamp(reg_result.opacity, pc->opacity_modifier_up_, 1.0f - pc->opacity_modifier_);
+         auto safe_opacity = torch::clamp(reg_result.opacity, 1e-6f, 1.0f - pc->opacity_modifier_);
          res.opacities = general_utils::inverse_sigmoid(safe_opacity);
          
          // Color

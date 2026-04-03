@@ -139,7 +139,12 @@ public:
         mlp_path = node["mlp_path"].as<std::string>();
         opacity_modifier = node["opacity_modifier"].as<double>();
         scale_modifier = node["scale_modifier"].as<double>();
+        opacity_modifier_up = node["opacity_modifier_up"].as<double>();
         extend_debug = node["extend_debug"].as<bool>();
+        if_tileCull_in_extend =
+            node["if_tileCull_in_extend"] ? node["if_tileCull_in_extend"].as<bool>() : false;
+        if_full_regress =
+            node["if_full_regress"] ? node["if_full_regress"].as<bool>() : false;
 
         // Backward Pose Optimization (IEKF) — 全部可选，默认不启用
         enable_pose_refinement = node["enable_pose_refinement"] ? node["enable_pose_refinement"].as<bool>() : false;
@@ -273,8 +278,11 @@ public:
     int dataset_target_train_times;
     double opacity_modifier;
     double scale_modifier;
+    double opacity_modifier_up;
 
     bool extend_debug;
+    bool if_tileCull_in_extend;
+    bool if_full_regress;
 
     // === Backward Pose Optimization (IEKF) ===
     bool enable_pose_refinement = false;    // 是否启用位姿修正

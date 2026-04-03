@@ -30,16 +30,15 @@ skybox_radius: 1000
 # === 新增 ===
 lambda_dist: 0.0005
 lambda_normal: 0.0
-alpha_threshold: 0.99
+alpha_threshold: 0.8
 slide_window_size: 15
 hiloss_threshold: 0.2
 hiColorLoss_threshold: 0.1
 train_times_threshold: 40
 # legacy
 opacity_threshold: 0.005
-opacity_modifier: 0.4 # 已更改为 clamp(max = 1- modifier)
-opacity_modifier_up: 1e-6 # opacity clamp 下界
-scale_modifier: 5000.0 # 暂时去掉！ 已更改为 clamp(max = modifier)
+opacity_modifier: 0.2 # 已更改为 clamp(max = 1- modifier)
+scale_modifier: 5000.0 # 已更改为 clamp(max = modifier)
 
 # === SPNet 深度补全配置（仅用于补点，逻辑保持不变）===
 spnet_model_path: /root/catkin_gaussian/Tiny_300_export.pt  # TorchScript 模型路径，取消注释并填写实际路径以启用
