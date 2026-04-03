@@ -30,7 +30,7 @@ skybox_radius: 1000
 # === 新增 ===
 lambda_dist: 0.0005
 lambda_normal: 0.0
-alpha_threshold: 0.99
+alpha_threshold: 0.90
 slide_window_size: 15
 hiloss_threshold: 0.2
 hiColorLoss_threshold: 0.1
@@ -38,9 +38,9 @@ train_times_threshold: 40
 # legacy
 opacity_threshold: 0.005
 
-opacity_modifier: 0.2 # 已更改为 clamp(max = 1- modifier)
+opacity_modifier: 0.1 # 已更改为 clamp(max = 1- modifier)
 opacity_modifier_up: 1e-6 # opacity clamp 下界
-opacity_prune_forRegress: 1e-5
+opacity_prune_forRegress: 1e-4
 
 scale_modifier: 5000.0 # 暂时去掉！ 已更改为 clamp(max = modifier)
 
@@ -92,7 +92,7 @@ dark_color_threshold: 7
 color_gradient_threshold: 0.02
 voxel_size: 0.1
 enable_regress_high_grad_traditional_init: true
-regress_high_grad_keep_ratio: 0.9
+regress_high_grad_keep_ratio: 0.8
 
 
 densify_grad_threshold: 0.001
