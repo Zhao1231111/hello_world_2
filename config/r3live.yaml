@@ -1,3 +1,4 @@
+# source: /root/catkin_gaussian/src/Gaussian-LIC/config/r3live.yaml
 width: 640
 height: 512
 fx: 431.71205
@@ -30,7 +31,6 @@ skybox_radius: 1000
 # === 新增 ===
 lambda_dist: 0.0005
 lambda_normal: 0.0
-alpha_threshold: 0.90
 slide_window_size: 15
 hiloss_threshold: 0.2
 hiColorLoss_threshold: 0.1
@@ -38,9 +38,6 @@ train_times_threshold: 40
 # legacy
 opacity_threshold: 0.005
 
-opacity_modifier: 0.1 # 已更改为 clamp(max = 1- modifier)
-opacity_modifier_up: 1e-6 # opacity clamp 下界
-opacity_prune_forRegress: 1e-4
 
 scale_modifier: 5000.0 # 暂时去掉！ 已更改为 clamp(max = modifier)
 
@@ -64,15 +61,9 @@ da3_conf_threshold: 0.6   # 置信度阈值[0,1]：推荐 0.5~0.8，可调 0.0~0
 da3_align_min_points: 30  # 最小二乘对齐最少匹配点数：推荐 30~100，可调 10~300
 da3_save_depth_vis: false  # 是否保存对齐后深度可视化（仅输出 *_da3_aligned_ls.png，便于快速排查）
 
-use_Gaussian_regress: true
-apply_regressed_rotation: true
-apply_regressed_position: false
-apply_regressed_sh_dc: true
-apply_regressed_sh_rest: false
 if_prune: false
 backbone_path: "/root/catkin_gaussian/backbone.pt"
 mlp_path: "/root/catkin_gaussian/gaussian_mlp.pt"
-generate_dataset: false
 
 dataset_path: "/root/autodl-tmp/dataset/gs_rg_r3live/dataset"
 
@@ -90,8 +81,6 @@ scale_ratio_threshold: 100
 dark_color_threshold: 7
 color_gradient_threshold: 0.02
 voxel_size: 0.1
-enable_regress_high_grad_traditional_init: true
-regress_high_grad_keep_ratio: 0.8
 
 
 densify_grad_threshold: 0.001
@@ -137,6 +126,26 @@ densify_new_opacity_min: 0.005
 densify_newborn_boost_steps: 20
 densify_newborn_pos_lr_scale: 2.0
 
+# ============== config =======================
+
+generate_dataset: false
+
+use_Gaussian_regress: true
+apply_regressed_rotation: true
+apply_regressed_position: false
+apply_regressed_sh_dc: true
+apply_regressed_sh_rest: true
 
 if_tileCull_in_extend: false # extend 中 Phase 4 的 render_2d 是否开启 tile culling
-if_full_regress: false # false: regress_mask = rendering_mask & spatial_mask; true: regress_mask = rendering_mask
+if_full_regress: true # false: regress_mask = rendering_mask & spatial_mask; true: regress_mask = rendering_mask
+
+
+alpha_threshold: 0.99
+
+opacity_modifier: 0.2 # 已更改为 clamp(1- modifier)
+opacity_modifier_up: 1e-6 # opacity clamp 下界
+opacity_prune_forRegress: 5e-5
+
+enable_regress_high_grad_traditional_init: true
+regress_high_grad_keep_ratio: 0.9
+
