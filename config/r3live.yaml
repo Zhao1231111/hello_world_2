@@ -69,7 +69,7 @@ dataset_path: "/root/autodl-tmp/dataset/gs_rg_r3live/dataset"
 # === 单帧训练过程可视化评估 ===
 # frame id 使用原始全局帧号，例如 train_0004.jpg 对应 4
 # 保存结构为 train_xxxx/times_xxxx，用来观察同一张训练图像随着训练推进的变化
-enable_train_visual_eval: false
+enable_train_visual_eval: true
 train_visual_eval_every_k_train_times: 4
 train_visual_eval_frame_ids: [4, 84, 64, 199, 239, 244, 249, 599, 604, 609, 784, 784, 794, 929, 964, 1234, 1264, 1589, 1624, 1784, 1799, 1814, 1839, 1854, 1874]
 train_visual_eval_output_dir: "train_visual_eval"

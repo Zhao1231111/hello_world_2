@@ -3188,7 +3188,7 @@ void runTrainVisualEvalIfNeeded(const std::shared_ptr<Dataset>& dataset,
     }
 
     const int frame_id = parseFrameIdFromImageName(train_camera->image_name_);
-    if (!isRequestedTrainVisualEvalFrame(pc->train_visual_eval_frame_ids_, frame_id)) return;
+    // if (!isRequestedTrainVisualEvalFrame(pc->train_visual_eval_frame_ids_, frame_id)) return;
 
     int save_every_k_times = pc->train_visual_eval_every_k_train_times_;
     if (save_every_k_times <= 0) {
@@ -3247,7 +3247,7 @@ void runTrainVisualEvalIfNeeded(const std::shared_ptr<Dataset>& dataset,
         lpips = lpips_module->forward(inputs).toTensor().item<double>();
     }
 
-    saveTensorImageAsBgr(rendered_image, render_path.string());
+    // saveTensorImageAsBgr(rendered_image, render_path.string());
 
     // const fs::path gt_path = train_dir / "gt.png";
     // if (!fs::exists(gt_path)) {
