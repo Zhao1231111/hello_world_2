@@ -69,7 +69,7 @@ dataset_path: "/root/autodl-tmp/dataset/gs_rg_r3live/dataset"
 # === 单帧训练过程可视化评估 ===
 # frame id 使用原始全局帧号，例如 train_0004.jpg 对应 4
 # 保存结构为 train_xxxx/times_xxxx，用来观察同一张训练图像随着训练推进的变化
-enable_train_visual_eval: true
+enable_train_visual_eval: false
 train_visual_eval_every_k_train_times: 4
 train_visual_eval_frame_ids: [4, 84, 64, 199, 239, 244, 249, 599, 604, 609, 784, 784, 794, 929, 964, 1234, 1264, 1589, 1624, 1784, 1799, 1814, 1839, 1854, 1874]
 train_visual_eval_output_dir: "train_visual_eval"
@@ -102,7 +102,7 @@ enable_normal_cull: false
 normal_z_cutoff: -0.001
 
 # === Backward Pose Optimization (IEKF) ===
-enable_pose_refinement: false
+enable_pose_refinement: true
 pose_max_iterations: 5
 pose_img_point_cov: 100.0
 pose_patch_size: 3  # 兼容旧版灰度 patch 位姿优化，当前 RGB 线性化实现未使用
@@ -129,21 +129,21 @@ densify_newborn_pos_lr_scale: 2.0
 
 generate_dataset: false
 
-use_Gaussian_regress: false
+use_Gaussian_regress: true
 apply_regressed_rotation: true
-apply_regressed_position: false
+apply_regressed_position: true
 apply_regressed_sh_dc: true
 apply_regressed_sh_rest: true
 
-if_tileCull_in_extend: true # extend 中 Phase 4 的 render_2d 是否开启 tile culling
+if_tileCull_in_extend: false # extend 中 Phase 4 的 render_2d 是否开启 tile culling
 if_full_regress: false # false: regress_mask = rendering_mask & spatial_mask; true: regress_mask = rendering_mask
 
 
 alpha_threshold: 0.99
 
-opacity_modifier: 0.2 # 已更改为 clamp(1- modifier)
+opacity_modifier: 0.5 # 暂时更改为旧版
 opacity_modifier_up: 1e-6 # opacity clamp 下界
-opacity_prune_forRegress: 5e-6
+opacity_prune_forRegress: 1e-6
 
 enable_regress_high_grad_traditional_init: true
 regress_high_grad_keep_ratio: 0.9

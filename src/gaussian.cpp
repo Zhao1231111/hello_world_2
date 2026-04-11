@@ -922,8 +922,8 @@ RegressionResult regress_gaussians(
          res.rots = reg_result.rotation;
          // MLP 当前输出的 opacity 是真实 alpha，而不是 logit。
          // 因此在 inverse_sigmoid 之前先做 clamp，避免 alpha 恰好为 0 或 1 时产生 inf。
-         auto safe_opacity = torch::clamp(reg_result.opacity, pc->opacity_modifier_up_, 1.0f - pc->opacity_modifier_);
-         res.opacities = general_utils::inverse_sigmoid(safe_opacity);
+         auto safe_opacity = torch::clamp(reg_result.opacity, 1e-6, 0.85);
+         res.opacities = general_utils::inverse_sigmoid(safe_opacity) * pc->opacity_modifier_;
          
          // Color
          res.features_dc = (reg_result.color_dc.transpose(1, 2) + rg_input.base_sh_.unsqueeze(2)).contiguous(); // (N, 3, 1)

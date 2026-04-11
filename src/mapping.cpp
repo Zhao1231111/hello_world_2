@@ -556,7 +556,7 @@ int main(int argc, char** argv)
         while (!exit_flag) 
         {
             double now = ros::Time::now().toSec();
-            if (gaussians_initialized && (now - last_point_time > 1.0) && image_buf.empty()) 
+            if (gaussians_initialized && (now - last_point_time > 5.0) && image_buf.empty()) 
             {
                 exit_flag = true;  // exit if no data is received for more than 1 second
             } 

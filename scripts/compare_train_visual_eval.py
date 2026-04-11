@@ -28,13 +28,13 @@ import matplotlib.pyplot as plt
 
 def parse_args():
     parser = argparse.ArgumentParser(description="将两个 train_visual_eval 的同名图像指标变化画到同一张图里。")
-    parser.add_argument("--root_a", default="/root/dataset/eval/test-for-comparison-3-29-3/tuning-3/train_visual_eval/", help="第一个 train_visual_eval 根目录。")
-    parser.add_argument("--root_b", default="/root/dataset/eval/test-for-comparison-3-29-3/tuning-4/train_visual_eval/", help="第二个 train_visual_eval 根目录。")
+    parser.add_argument("--root_a", default="/root/autodl-tmp/dataset/gs_rg-10/baseline-hku_campus_seq_00-4-4-forcomparison/train_visual_eval/", help="第一个 train_visual_eval 根目录。")
+    parser.add_argument("--root_b", default="/root/autodl-tmp/dataset/gs_rg-13-temp/evaluation-hku_campus_seq_00-4-5-compaison-2-moreRegress/train_visual_eval/", help="第二个 train_visual_eval 根目录。")
     parser.add_argument("--label_a", default="baseline", help="第一个数据集在图例中的名字。")
     parser.add_argument("--label_b", default="regressor", help="第二个数据集在图例中的名字。")
     parser.add_argument(
         "--output_dir",
-        default="/root/dataset/eval/test-for-comparison-3-29-3/train_visual_eval_compare",
+        default="/root/autodl-tmp/dataset/gs_rg-10/comparison-4-5/train_visual_eval_compare-3",
         help="对比图输出目录，默认保存在当前目录下的 train_visual_eval_compare。",
     )
     parser.add_argument(
