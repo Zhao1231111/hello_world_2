@@ -2960,6 +2960,11 @@ double optimize(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<Gaussia
         pc->t_end_ = std::chrono::steady_clock::now();
         pc->t_forward_ += std::chrono::duration_cast<std::chrono::duration<double>>(pc->t_end_ - pc->t_start_).count();
 
+        // 在优化前，对指定训练帧做过程评估。
+        if (idx < train_camera_num) {
+            runTrainVisualEvalIfNeeded(dataset, pc, viewpoint_cam, idx);
+        }
+
         // --- 保存debug图片 ---
         if (pc->extend_debug_ && pc->keyframe_train_times_[idx] == 0) {
             std::string debug_dir = pc->dataset_path_;
@@ -3149,13 +3154,6 @@ double optimize(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<Gaussia
             pc->prune(keep_mask);
         }
 
-        // 对指定训练帧做过程评估。
-        // 这里放在当前视角的所有更新都完成之后，
-        // 这样保存下来的渲染结果就是“这张图刚刚被训练过一次之后”的状态。
-        if (idx < train_camera_num) {
-            runTrainVisualEvalIfNeeded(dataset, pc, viewpoint_cam, idx);
-        }
-
         torch::cuda::synchronize();
         pc->t_end_ = std::chrono::steady_clock::now();
         pc->t_step_ += std::chrono::duration_cast<std::chrono::duration<double>>(pc->t_end_ - pc->t_start_).count();
@@ -3196,7 +3194,7 @@ void runTrainVisualEvalIfNeeded(const std::shared_ptr<Dataset>& dataset,
     }
 
     const int train_times = pc->keyframe_train_times_[train_camera_idx];
-    if (train_times <= 0) return;
+    if (train_times < 0) return;
     if (train_times % save_every_k_times != 0) return;
 
     // 同一个 train_times 只保存一次，避免重复落盘。

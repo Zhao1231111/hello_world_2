@@ -340,6 +340,15 @@ def main():
     parser.add_argument("--backbone_type", type=str, default="resnet18", help="resnet18 | dino_vits8")
     parser.add_argument("--d_out", type=int, default=128, help="Output feature dimension")
     parser.add_argument("--disable_dim_reduction", action="store_true", help="Disable the 512 -> 128 dimension reduction in DINO backbone")
+    parser.add_argument(
+        "--export_mode",
+        type=str,
+        default="auto",
+        choices=("auto", "script", "trace"),
+        help="TorchScript export mode. Prefer script for DINO because trace may freeze a wrong padding branch.",
+    )
+    parser.add_argument("--trace_height", type=int, default=256, help="Dummy input height used when export_mode=trace")
+    parser.add_argument("--trace_width", type=int, default=256, help="Dummy input width used when export_mode=trace")
     
     args = parser.parse_args()
 
@@ -432,21 +441,39 @@ def main():
         print(f"Warning: Missing keys: {len(missing)}")
         # print(missing[:5])
 
-    # Trace
-    print("Tracing and exporting...")
+    # Export
     model.eval()
-    
-    # Dummy input
-    # Need to be careful with DINO patch size constraints for dummy input
-    # Assuming standard 256x256
-    dummy_input = torch.randn(1, 3, 256, 256)
-    
+
     try:
-        traced = torch.jit.trace(model, dummy_input)
-        traced.save(args.output)
+        if args.export_mode in ("auto", "script"):
+            print("Scripting and exporting...")
+            try:
+                exported = torch.jit.script(model)
+            except Exception:
+                if args.export_mode == "script":
+                    raise
+                print("Scripting failed, falling back to trace export...")
+                if "dino" in args.backbone_type:
+                    print(
+                        "Warning: tracing a DINO backbone is input-size sensitive. "
+                        "Use --trace_height/--trace_width that exactly match runtime images."
+                    )
+                dummy_input = torch.randn(1, 3, args.trace_height, args.trace_width)
+                exported = torch.jit.trace(model, dummy_input)
+        else:
+            print("Tracing and exporting...")
+            if "dino" in args.backbone_type:
+                print(
+                    "Warning: tracing a DINO backbone is input-size sensitive. "
+                    "Use --trace_height/--trace_width that exactly match runtime images."
+                )
+            dummy_input = torch.randn(1, 3, args.trace_height, args.trace_width)
+            exported = torch.jit.trace(model, dummy_input)
+
+        exported.save(args.output)
         print(f"Successfully saved to {args.output}")
     except Exception as e:
-        print(f"Tracing failed: {e}")
+        print(f"Export failed: {e}")
 
 if __name__ == "__main__":
     main()
