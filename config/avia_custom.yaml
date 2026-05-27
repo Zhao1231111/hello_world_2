@@ -103,7 +103,7 @@ enable_normal_cull: false
 normal_z_cutoff: -0.001
 
 # === Backward Pose Optimization (IEKF) ===
-enable_pose_refinement: false
+enable_pose_refinement: true
 pose_max_iterations: 5
 pose_img_point_cov: 100.0
 pose_patch_size: 3  # 兼容旧版灰度 patch 位姿优化，当前 RGB 线性化实现未使用

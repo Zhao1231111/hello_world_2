@@ -59,14 +59,17 @@ class Dataset
 {
 public:
     Dataset(const Params& prm)
-      : fx_(prm.fx), fy_(prm.fy), cx_(prm.cx), cy_(prm.cy),
+      : width_(prm.width), height_(prm.height),
+        fx_(prm.fx), fy_(prm.fy), cx_(prm.cx), cy_(prm.cy),
         select_every_k_frame_(prm.select_every_k_frame),
-        pose_init_cov_(prm.pose_init_cov),
+        pose_init_cov_(prm.pose_init_cov), has_logged_image_size_(false),
         all_frame_num_(0), is_keyframe_current_(false) {}
         
     void addFrame(Frame& cur_frame);
 
 public:
+    int width_;
+    int height_;
     double fx_;
     double fy_;
     double cx_;
@@ -75,6 +78,7 @@ public:
     //选择每k帧作为关键帧
     int select_every_k_frame_;
     double pose_init_cov_;
+    bool has_logged_image_size_;
 
     //所有帧数
     int all_frame_num_;

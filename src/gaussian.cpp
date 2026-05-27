@@ -344,6 +344,23 @@ void Dataset::addFrame(Frame& cur_frame)
     cv_bridge::CvImagePtr cv_ptr;
     cv_ptr = cv_bridge::toCvCopy(cur_frame.image_msg, sensor_msgs::image_encodings::BGR8);
     cv::Mat image_bgr = cv_ptr->image;
+    if (!has_logged_image_size_)
+    {
+        has_logged_image_size_ = true;
+        std::cout << "[Dataset] first image msg size = "
+                  << image_bgr.cols << "x" << image_bgr.rows
+                  << ", config size = " << width_ << "x" << height_
+                  << std::endl;
+    }
+    if (width_ > 0 && height_ > 0 &&
+        (image_bgr.cols != width_ || image_bgr.rows != height_))
+    {
+        std::cout << "\033[1;33m[Dataset] resizing incoming image from "
+                  << image_bgr.cols << "x" << image_bgr.rows
+                  << " to config size " << width_ << "x" << height_
+                  << "\033[0m" << std::endl;
+        cv::resize(image_bgr, image_bgr, cv::Size(width_, height_), 0, 0, cv::INTER_LINEAR);
+    }
     cv::Mat image_rgb;
     cv::cvtColor(image_bgr, image_rgb, cv::COLOR_BGR2RGB);  // 0-255
     image_rgb.convertTo(image_rgb, CV_32FC3, 1.0f / 255.0f);  // 0-1
