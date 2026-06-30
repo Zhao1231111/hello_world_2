@@ -1,152 +1,270 @@
-<p align="center">
-  <h1 align="center">Gaussian-LIC: Real-Time Photo-Realistic SLAM with Gaussian Splatting and LiDAR-Inertial-Camera Fusion</h1>
-  <p align="center">
-    ICRA 2025
-  </p>
-  <p align="center">
-    <a href="https://arxiv.org/pdf/2404.06926">
-      <img src='https://img.shields.io/badge/Paper-PDF-red?style=flat&logo=arXiv&logoColor=red' alt='Paper PDF'>
-    </a>
-    <a href='https://xingxingzuo.github.io/gaussian_lic/' style='padding-left: 0.5rem;'>
-      <img src='https://img.shields.io/badge/Project-Page-blue?style=flat&logo=Google%20chrome&logoColor=blue' alt='Project Page'>
-    </a>
-  </p>
-</p>
-
-Gaussian-LIC is a photo-realistic LiDAR-Inertial-Camera Gaussian Splatting SLAM system, which simultaneously performs robust, accurate pose estimation and constructs a photo-realistic 3D Gaussian map in real time.
-
-<p align="center">
-    <img src="figure/r1_compressed.gif" alt="Logo" width="32%">
-    <img src="figure/r0_compressed.gif" alt="Logo" width="32%">
-    <img src="figure/f2_compressed.gif" alt="Logo" width="32%">
-</p>
-
-### 📢 News
-
-- [2025-07-08] Gaussian-LIC2 is unveiled! 🎉 [[`Paper`](https://arxiv.org/pdf/2507.04004)] [[`Page`](https://xingxingzuo.github.io/gaussian_lic2/)] [[`YouTube`](https://www.youtube.com/watch?v=SkPnpuCfh88)] [[`bilibili`](https://www.bilibili.com/video/BV1fJ3kzfEYv/?spm_id_from=333.337.search-card.all.click&vd_source=99ac6409fc9373f3960feff31c28a189)] (to be released here)
-- [2025-07-07] The enhanced version of the Gaussian-LIC code is released!
-- [2025-01-28] Gaussian-LIC is accepted to ICRA 2025! 🎉
-- [2024-09-26] The second version of the paper is available on arXiv.
-- [2024-04-10] The first version of the paper is available on arXiv.
-
-### 💌 Contact
-
-Questions? Please don't hesitate to reach out to Xiaolei Lang (Jerry) at jerry_locker@zju.edu.cn.
-
-## Install
-
-We test on ubuntu 20.04 with an NVIDIA RTX 3090 / 4090.
-
-1. Exit Conda environment.
-
-2. Prepare third-party libraries according to [Coco-LIC](https://github.com/APRIL-ZJU/Coco-LIC).
-
-3. Install [CUDA 11.7](https://developer.nvidia.com/cuda-11-7-1-download-archive?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu&target_version=20.04&target_type=runfile_local) with [cuDNN v8.9.7](https://developer.nvidia.com/rdp/cudnn-archive).
-
-4. Build [OpenCV 4.7.0](https://github.com/opencv/opencv/archive/refs/tags/4.7.0.tar.gz).（must be built with [opencv_contrib 4.7.0](https://github.com/opencv/opencv_contrib/archive/refs/tags/4.7.0.tar.gz) and CUDA, no installation required）
-
-   ```shell
-   mkdir -p /root/Software/opencv
-   cd /root/Software/opencv
-   wget https://github.com/opencv/opencv/archive/refs/tags/4.7.0.tar.gz && tar -zxvf 4.7.0.tar.gz && rm -rf 4.7.0.tar.gz
-   wget https://github.com/opencv/opencv_contrib/archive/refs/tags/4.7.0.tar.gz && tar -zxvf 4.7.0.tar.gz && rm -rf 4.7.0.tar.gz
-
-   cd /root/Software/opencv/opencv-4.7.0
-   mkdir build && cd build
-   cmake -DCMAKE_BUILD_TYPE=RELEASE -DWITH_CUDA=ON -DWITH_CUDNN=ON -DOPENCV_DNN_CUDA=ON -DWITH_NVCUVID=ON -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-11.7 -DOPENCV_EXTRA_MODULES_PATH="../../opencv_contrib-4.7.0/modules" -DBUILD_TIFF=ON -DBUILD_ZLIB=ON -DBUILD_JASPER=ON -DBUILD_CCALIB=ON -DBUILD_JPEG=ON -DWITH_FFMPEG=ON ..
-   make -j$(nproc)
-   ```
+# LIV-Surfel: Feed-Forward Surfel Regression for LiDAR-Inertial-Visual Incremental 2DGS Mapping
 
 
-5. Prepare [LibTorch](https://pytorch.org/get-started/locally/).（no compilation or installation required）
+---
 
-   ```shell
-   cd /root/Software
-   wget https://download.pytorch.org/libtorch/cu117/libtorch-cxx11-abi-shared-with-deps-2.0.1%2Bcu117.zip
-   unzip libtorch-cxx11-abi-shared-with-deps-2.0.1+cu117.zip && rm -rf libtorch-cxx11-abi-shared-with-deps-2.0.1+cu117.zip
-   ```
+## Overview
 
+Incremental 3D scene reconstruction requires continuously expanding the map frame by frame under a limited per-frame optimization budget. Newly inserted Gaussians undergo only a few optimization steps before they must serve subsequent rendering, so their **initial attribute quality directly determines the cumulative mapping result**.
 
-6. Install Coco-LIC.
+**LIV-Surfel** is a context-aware feed-forward Gaussian regression system for incremental **2D Gaussian Splatting (2DGS)** scene reconstruction. It adopts 2DGS surfels as the map representation and, rather than relying on hand-crafted rule-based initialization, trains a feed-forward network to directly predict surfel attributes at the insertion stage.
 
-   ```shell
-   mkdir -p /root/catkin_coco/src
-   cd /root/catkin_coco/src
-   git clone https://github.com/Livox-SDK/livox_ros_driver.git
-   cd /root/catkin_coco && catkin_make
-   cd /root/catkin_coco/src
-   git clone https://github.com/APRIL-ZJU/Coco-LIC.git
-   cd /root/catkin_coco && catkin_make
-   ```
+The system operates as a mapping back-end on top of an external LiDAR-Inertial-Visual Odometry (LIVO) front-end (e.g., [Coco-LIC](https://github.com/APRIL-ZJU/Coco-LIC)). For each incoming keyframe, it:
 
+1. Densifies sparse LiDAR depth via **SPNet** depth completion and estimates per-pixel surface normals via **DA3**.
+2. Screens under-reconstructed candidate points based on current-map rendering opacity and color error.
+3. Runs a **feed-forward Gaussian regressor** that aggregates multi-view context from the current and historical frames via cross-attention, and anchors surfel rotation on normal priors through Gram-Schmidt orthogonalization, predicting surfel attributes in a single forward pass.
+4. Inserts the predicted surfels into the incremental map and refines them with online photometric and geometric optimization.
 
-7. Install Gaussian-LIC.
+The regressor is trained via **self-distillation** — supervision is collected from the system's own incremental mapping run on training scenes, requiring no external annotated dataset.
 
-   ```shell
-   mkdir -p /root/catkin_gaussian/src
-   cd /root/catkin_gaussian/src
-   git clone https://github.com/APRIL-ZJU/Gaussian-LIC.git
-   cd /root/catkin_gaussian && catkin_make
-   ```
+---
 
+## Key Contributions
 
-## Run
+- **Geometry-aware incremental 2DGS back-end.** The surface-oriented 2DGS representation provides explicit normal semantics, enabling direct integration of depth completion and normal priors for geometrically consistent surfel initialization.
+- **Context-aware feed-forward Gaussian insertion.** A cross-attention network regresses all surfel attributes (scale, rotation, opacity, SH color) in a single forward pass by aggregating multi-view context and anchoring predictions on geometric priors, significantly improving early convergence quality under limited optimization budgets.
+- **Self-distillation training.** The network is trained entirely from supervision signals generated by the system's own mapping process — no external labeled data is required.
 
-Quick start on the sequence hku2 in the FAST-LIVO dataset.
+---
 
-- Download [FAST-LIVO Dataset](https://connecthkuhk-my.sharepoint.com/personal/zhengcr_connect_hku_hk/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fzhengcr%5Fconnect%5Fhku%5Fhk%2FDocuments%2FFAST%2DLIVO%2DDatasets&ga=1) or [R3LIVE Dataset](https://github.com/ziv-lin/r3live_dataset) or [MCD Dataset](https://mcdviral.github.io/).
+## Results
 
-+ Modify `bag_path` in the `config/ct_odometry_fastlivo.yaml` file of Coco-LIC.
+Our method outperforms all baselines on nearly all test sequences across the **R3LIVE** (Livox Avia), **MCD** (OS1-64), and our **self-collected campus** datasets, achieving an average improvement of **1.28 dB PSNR** over the closest multi-sensor incremental Gaussian mapping baseline (Gaussian-LIC2).
 
-+ Launch Gaussian-LIC.
+| Sequence | MonoGS | MM3DGS-SLAM | Gaussian-LIC2 | **Ours** |
+|---|---|---|---|---|
+| degenerate\_seq\_00 | 14.59 | 19.35 | 21.99 | **23.41** |
+| hku\_campus\_00 | 15.41 | 18.70 | 24.34 | **25.52** |
+| hku\_campus\_01 | 8.39 | 16.97 | 20.52 | **23.15** |
+| campus\_seq\_00 | 14.56 | 18.54 | 23.97 | **25.55** |
+| campus\_seq\_01 | 13.21 | 17.14 | 22.76 | **24.56** |
 
-  ```shell
-  cd /root/catkin_gaussian
-  source devel/setup.bash
-  roslaunch gaussian_lic fastlivo.launch  // The terminal will print "😋 Gaussian-LIC Ready!".
-  ```
+*PSNR (dB, higher is better). See the paper for full PSNR / SSIM / LPIPS tables.*
 
+---
 
-+ Launch Coco-LIC.
+## Repository Layout
 
-  Note：For real-time use and runtime analysis, please turn off the rviz in Coco-LIC by commenting the sentence `<node pkg="rviz" type="rviz" name="rviz_odom" output="log" required = "true" args="-d $(find cocolic)/config/coco.rviz" />`  in `odometry.launch`.
+```
+Gaussian-LIC/
+├── launch/          # ROS launch files for mapping
+├── config/          # Dataset-specific runtime configs (paths, model paths, parameters)
+├── scripts/         # Dataset preparation and regressor training utilities
+│   ├── prepare_shards.py
+│   ├── train_regressor.py
+│   ├── visualize_mlp_predictions.py
+│   └── process_log.py
+└── src/             # Mapping, rendering, optimization, and third-party components
+```
 
-  ```shell
-  cd /root/catkin_coco
-  source devel/setup.bash
-  roslaunch cocolic odometry.launch config_path:=config/ct_odometry_fastlivo.yaml
-  ```
+---
 
+## Environment Setup
 
-+ The mapping and rendering results will be saved in  `/root/catkin_gaussian/src/Gaussian-LIC/result`.
+This code runs inside a **ROS + Catkin** workflow, following the original Gaussian-LIC / Coco-LIC setup. You need:
+
+- A working `catkin` workspace for this repository (referred to as `catkin_gaussian`)
+- A separate `catkin` workspace for [Coco-LIC](https://github.com/APRIL-ZJU/Coco-LIC) (referred to as `catkin_coco`)
+- A **Python / Conda** environment for dataset preparation and regressor training
+
+**Build the ROS workspace:**
+
+```bash
+cd /root/catkin_gaussian
+catkin_make
+```
+
+**Python dependencies** (for `scripts/`):
+
+```bash
+conda create -n liv_surfel python=3.8
+conda activate liv_surfel
+pip install torch torchvision   # match your CUDA version
+pip install numpy scipy tqdm
+```
+
+> **Note:** The released code may reference local absolute paths. Update `config/r3live.yaml` (and other config files) to match your environment before launching.
+
+---
+
+## Usage
+
+This repository supports two distinct workflows:
+
+1. **Model training** — collect self-distillation supervision from training scenes, then train the feed-forward Gaussian regressor.
+2. **Inference on new scenes** — run online mapping with the trained regressor enabled.
+
+Both workflows require running two terminals in parallel: one for the Gaussian mapping back-end, and one for the Coco-LIC odometry front-end.
+
+---
+
+### Workflow 1: Model Training
+
+Training consists of three steps: data generation → dataset reorganization → regressor training.
+
+#### Step 1 — Generate Training Data
+
+Run the mapping back-end in dataset-generation mode (without the regressor). Repeat for each training scene to increase scene diversity.
+
+**Terminal 1 — Gaussian mapping (data generation mode):**
+
+```bash
+cd /root/catkin_gaussian
+source devel/setup.bash
+roslaunch gaussian_lic r3live.launch \
+    result_path:="$DATASET_OUTPUT_PATH" \
+    use_Gaussian_regress:="false" \
+    generate_dataset:="true"
+```
+
+**Terminal 2 — Coco-LIC odometry:**
+
+```bash
+cd /root/catkin_coco
+source devel/setup.bash
+roslaunch cocolic odometry.launch \
+    bag_path:="$BAG_PATH" \
+    config_path:=/config/ct_odometry_r3live.yaml
+```
+
+#### Step 2 — Reorganize the Dataset into Shards
+
+```bash
+conda activate liv_surfel
+cd /root/catkin_gaussian/src/Gaussian-LIC/scripts
+python prepare_shards.py \
+    --root_dir "$OUTPUT_BASE_DIR" \
+    --shards_dir "$OUTPUT_BASE_DIR/shards" \
+    --val_shards_dir "$OUTPUT_BASE_DIR/val_shards" \
+    --external_shuffle \
+    --gt_ply_name point_cloud.ply
+```
+
+#### Step 3 — Train the Gaussian Regressor
+
+```bash
+conda activate liv_surfel
+cd /root/catkin_gaussian/src/Gaussian-LIC/scripts
+python train_regressor.py \
+    --shards_dir "$OUTPUT_BASE_DIR/shards" \
+    --val_shards_dir "$OUTPUT_BASE_DIR/val_shards" \
+    --save_dir "$OUTPUT_BASE_DIR/training_results" \
+    --epochs 150 \
+    --batch_size 8192 \
+    --lr 0.0005 \
+    --buffer_size_mb 512 \
+    --max_buffer_points 300000 \
+    --log_interval 10 \
+    --val_batches 10 \
+    --save_interval 5 \
+    --num_workers 0 \
+    --focal_length 431.7103 \
+    --lambda_scale 1.0 \
+    --lambda_rot 1.0 \
+    --lambda_dc 1.0 \
+    --lambda_rest 0.1 \
+    --lambda_opac 1.0 \
+    --lambda_pos 0.0
+```
+
+---
+
+### Workflow 2: Inference on New Scenes
+
+After training, enable the regressor during online mapping. The inference scene does not need to overlap with the training scenes.
+
+Before launching, update the regressor model path and other relevant fields in `config/r3live.yaml`.
+
+> **Note:** Our pretrained `gaussian_mlp.pt` checkpoint is **not released** at this time.
+
+**Terminal 1 — Gaussian mapping (inference mode):**
+
+```bash
+cd /root/catkin_gaussian
+source devel/setup.bash
+roslaunch gaussian_lic r3live.launch \
+    result_path:="$DATASET_OUTPUT_PATH" \
+    use_Gaussian_regress:="true" \
+    generate_dataset:="false"
+```
+
+**Terminal 2 — Coco-LIC odometry:**
+
+```bash
+cd /root/catkin_coco
+source devel/setup.bash
+roslaunch cocolic odometry.launch \
+    bag_path:="$BAG_PATH" \
+    config_path:=/config/ct_odometry_r3live.yaml
+```
+
+---
+
+## Runtime Notes
+
+| Parameter | Description |
+|---|---|
+| `result_path` | Output directory for mapping results |
+| `generate_dataset` | Set to `true` for self-distillation data collection |
+| `use_Gaussian_regress` | Set to `true` to enable the feed-forward regressor during inference |
+
+- Review `config/r3live.yaml` for dataset paths, model paths, and all runtime parameters before launching.
+- The released code may contain local absolute paths that must be updated for your environment.
+
+---
+
+## License and Legal Notes
+
+This repository is **not distributed as a single relicensed codebase**.
+
+- Our implementation is developed on top of Gaussian-LIC and related upstream projects.
+- Different subdirectories may be subject to different license terms.
+- You must preserve original copyright notices, license headers, and attribution statements.
+- Before redistribution or downstream use, please review at least:
+  - `src/diff_surfel_rasterization_2d/LICENSE.md`
+  - `src/simple-knn/*`
+  - The upstream repositories listed in Acknowledgements below.
+
+Parts derived from Gaussian Splatting / Inria codebases may be subject to non-commercial or research-only terms. This repository is intended as a **research release**; further legal and engineering cleanup may be required for commercial or broader downstream use.
+
+---
+
+## Acknowledgements
+
+This project builds upon or incorporates ideas and code from:
+
+- [Gaussian-LIC](https://github.com/APRIL-ZJU/Gaussian-LIC)
+- [Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting)
+- [2D Gaussian Splatting](https://surfsplatting.github.io/)
+- [Coco-LIC](https://github.com/APRIL-ZJU/Coco-LIC)
+- [pixelSplat](https://dcharatan.github.io/pixelsplat)
+- [MVSplat](https://donydchen.github.io/mvsplat)
+- [PixelGaussian](https://wzzheng.net/PixelGaussian)
+- [Photo-SLAM](https://github.com/HuajianUP/Photo-SLAM)
+- [Taming-3DGS](https://github.com/humansensinglab/taming-3dgs)
+- [StopThePop](https://github.com/r4dl/StopThePop)
+
+We sincerely thank the authors of these works. Please cite the corresponding upstream papers and repositories when appropriate.
+
+---
 
 ## Citation
 
-If you find our work helpful, please consider citing 🌟:
+If you find this work useful, please cite our paper and the relevant upstream projects:
 
 ```bibtex
-@inproceedings{lang2025gaussian,
-  title={Gaussian-LIC: Real-Time Photo-Realistic SLAM with Gaussian Splatting and LiDAR-Inertial-Camera Fusion},
-  author={Lang, Xiaolei and Li, Laijian and Wu, Chenming and Zhao, Chen and Liu, Lina and Liu, Yong and Lv, Jiajun and Zuo, Xingxing},
-  booktitle={2025 International Conference on Robotics and Automation (ICRA)},
-  year={2025},
-  organization={IEEE}
+@article{anonymous2025livsurfel,
+  title     = {{LIV-Surfel}: Feed-Forward Surfel Regression for {LiDAR-Inertial-Visual} Incremental {2DGS} Mapping},
+  author    = {Anonymous Authors},
+  journal   = {IEEE Robotics and Automation Letters},
+  year      = {2025},
+  note      = {Under review}
 }
 ```
 
-```bibtex
-@article{lang2025gaussian2,
-  title={Gaussian-LIC2: LiDAR-Inertial-Camera Gaussian Splatting SLAM},
-  author={Lang, Xiaolei and Lv, Jiajun and Tang, Kai and Li, Laijian and Huang, Jianxin and Liu, Lina and Liu, Yong and Zuo, Xingxing},
-  journal={arXiv},
-  year={2025}
-}
-```
+---
 
-## Acknowledgement
+## Contact
 
-Thanks for [3DGS](https://github.com/graphdeco-inria/gaussian-splatting), [Taming-3DGS](https://github.com/humansensinglab/taming-3dgs), [StopThePop](https://github.com/r4dl/StopThePop) and [Photo-SLAM](https://github.com/HuajianUP/Photo-SLAM).
-
-## LICENSE
-
-The code is released under the [GNU General Public License v3 (GPL-3)](https://www.gnu.org/licenses/gpl-3.0.txt).
+For questions regarding reproduction or licensing, please open an issue in this repository.

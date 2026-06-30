@@ -1,7 +1,3 @@
-/*
- * 位姿评估日志记录器实现
- */
-
 #include "pose_eval_recorder.h"
 
 #include "camera.h"
@@ -13,9 +9,6 @@
 namespace
 {
 
-/**
- * @brief 将内部使用的世界到相机位姿 T_cw 转成对外统一记录的 T_wc
- */
 void convertPoseCwToWc(const Eigen::Matrix3d& R_cw,
                        const Eigen::Vector3d& t_cw,
                        Eigen::Matrix3d& R_wc,
@@ -25,9 +18,6 @@ void convertPoseCwToWc(const Eigen::Matrix3d& R_cw,
     t_wc = -R_wc * t_cw;
 }
 
-/**
- * @brief 追加一组位姿到 CSV 输出流
- */
 void appendPoseCsv(std::ostream& os,
                    const Eigen::Matrix3d& R_cw,
                    const Eigen::Vector3d& t_cw)
@@ -90,7 +80,7 @@ void PoseEvalRecorder::recordFrame(const std::shared_ptr<Camera>& camera,
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // 时间戳和位姿统一采用较高精度输出，便于离线最近邻匹配。
+    // Keep pose and timestamp precision high for offline matching.
     file_ << std::fixed << std::setprecision(9);
     file_ << status.frame_idx << ','
           << camera->image_name_ << ','

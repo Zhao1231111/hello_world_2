@@ -1,7 +1,3 @@
-/*
- * 当前帧 2DGS-IEKF 位姿优化器实现
- */
-
 #include "pose_optimizer.h"
 
 #include "camera.h"
@@ -15,9 +11,6 @@
 namespace
 {
 
-/**
- * @brief 将 6x6 Torch 张量转换为 Eigen 矩阵
- */
 Eigen::Matrix<double, 6, 6> tensorToEigenMatrix6(const torch::Tensor& tensor)
 {
     Eigen::Matrix<double, 6, 6> matrix = Eigen::Matrix<double, 6, 6>::Zero();
@@ -33,9 +26,6 @@ Eigen::Matrix<double, 6, 6> tensorToEigenMatrix6(const torch::Tensor& tensor)
     return matrix;
 }
 
-/**
- * @brief 将 6 维 Torch 张量转换为 Eigen 向量
- */
 Eigen::Matrix<double, 6, 1> tensorToEigenVector6(const torch::Tensor& tensor)
 {
     Eigen::Matrix<double, 6, 1> vector = Eigen::Matrix<double, 6, 1>::Zero();
@@ -48,11 +38,7 @@ Eigen::Matrix<double, 6, 1> tensorToEigenVector6(const torch::Tensor& tensor)
     return vector;
 }
 
-/**
- * @brief 计算“先验减当前估计”的 6 维误差，用于先验约束项
- *
- * [公式] eta = (T_pred boxminus T_current)
- */
+// Compute the pose residual between the prior and the current T_cw estimate.
 Eigen::Matrix<double, 6, 1> computePriorMinusCurrent(
     const std::shared_ptr<Camera>& viewpoint_camera,
     const Eigen::Matrix3d& current_R_cw,
@@ -64,9 +50,7 @@ Eigen::Matrix<double, 6, 1> computePriorMinusCurrent(
     return eta;
 }
 
-/**
- * @brief 对协方差做最小正则化，防止求逆时数值退化
- */
+// Keep the covariance numerically invertible.
 Eigen::Matrix<double, 6, 6> regularizeCovariance(
     const Eigen::Matrix<double, 6, 6>& covariance,
     double init_cov)
@@ -81,9 +65,6 @@ Eigen::Matrix<double, 6, 6> regularizeCovariance(
     return regularized;
 }
 
-/**
- * @brief 构造当前帧滤波使用的背景颜色
- */
 torch::Tensor buildPoseBackground(const std::shared_ptr<GaussianModel>& pc)
 {
     if (pc->white_background_)
@@ -93,9 +74,7 @@ torch::Tensor buildPoseBackground(const std::shared_ptr<GaussianModel>& pc)
     return torch::zeros({3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
 }
 
-/**
- * @brief 对单轮位姿增量做旋转/平移步长裁剪，避免一次更新过大直接跳飞
- */
+// Clamp the update step to keep the filter stable.
 bool clampDeltaXi(
     Eigen::Matrix<double, 6, 1>& delta_xi,
     double max_step_rot_deg,
@@ -257,7 +236,6 @@ PoseFilterResult refineCurrentFramePose(
         const Eigen::Matrix<double, 6, 1> eta =
             computePriorMinusCurrent(viewpoint_camera, working_camera->R_cw_, working_camera->t_cw_);
 
-        // [公式] A = P^{-1} + JTJ,  b = P^{-1} * eta + JTr
         const Eigen::Matrix<double, 6, 6> system = prior_info + jtj;
         const Eigen::Matrix<double, 6, 1> rhs = prior_info * eta + jtr;
 
@@ -282,7 +260,6 @@ PoseFilterResult refineCurrentFramePose(
             result.step_was_clamped = true;
         }
 
-        // [公式] T_{cw}^{+} = Exp(delta_xi^\wedge) T_{cw}
         const Eigen::Matrix3d dR = Exp(delta_xi.block<3, 1>(0, 0));
         auto candidate_camera = std::make_shared<Camera>(*working_camera);
         const Eigen::Matrix3d next_R_cw = dR * candidate_camera->R_cw_;

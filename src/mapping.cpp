@@ -36,7 +36,6 @@
 #include <sstream>
 #include <streambuf>
 
-// 自定义的流缓冲区，将数据同时写入两个缓冲区（屏幕和文件）
 class TeeBuf : public std::streambuf {
 public:
     TeeBuf(std::streambuf* sb1, std::streambuf* sb2) : sb1(sb1), sb2(sb2) {}
@@ -63,12 +62,11 @@ std::queue<sensor_msgs::PointCloud2ConstPtr> point_buf;
 std::queue<geometry_msgs::PoseStampedConstPtr> pose_buf;
 std::queue<sensor_msgs::ImageConstPtr> image_buf;
 
-//atomic: 原子操作，保证线程安全
 std::atomic<bool> exit_flag(false);
 std::atomic<double> last_point_time(0.0);
 std::atomic<bool> gaussians_initialized(false);
 
-void pointCallback(const sensor_msgs::PointCloud2ConstPtr& point_msg) 
+void pointCallback(const sensor_msgs::PointCloud2ConstPtr& point_msg)
 {
     m_buf.lock();
     point_buf.push(point_msg);
@@ -76,34 +74,30 @@ void pointCallback(const sensor_msgs::PointCloud2ConstPtr& point_msg)
     m_buf.unlock();
 }
 
-void poseCallback(const geometry_msgs::PoseStampedConstPtr& pose_msg) 
+void poseCallback(const geometry_msgs::PoseStampedConstPtr& pose_msg)
 {
     m_buf.lock();
     pose_buf.push(pose_msg);
     m_buf.unlock();
 }
 
-void imageCallback(const sensor_msgs::ImageConstPtr& image_msg) 
+void imageCallback(const sensor_msgs::ImageConstPtr& image_msg)
 {
     m_buf.lock();
     image_buf.push(image_msg);
     m_buf.unlock();
 }
 
-// 获取同步对齐的数据帧
-// 返回值：true表示成功找到同步的数据，false表示数据缓冲区不足或无法同步
+// Align point, pose, and image messages around the point-cloud timestamp.
 bool getAlignedData(Frame& cur_frame)
 {
-    // 检查三个数据缓冲区是否都有数据
     if (point_buf.empty() || pose_buf.empty() || image_buf.empty())
     {
         return false;
     }
 
-    // 以点云数据的时间戳作为基准时间
     double frame_time = point_buf.front()->header.stamp.toSec();
 
-    // 同步姿态数据：移除时间戳过早的姿态消息
     while (1)
     {
         if (pose_buf.front()->header.stamp.toSec() < frame_time - 0.01)
@@ -116,14 +110,12 @@ bool getAlignedData(Frame& cur_frame)
         }
         else break;
     }
-    // 检查姿态数据时间戳是否在允许范围内
     if (pose_buf.front()->header.stamp.toSec() > frame_time + 0.01)
     {
-        point_buf.pop();  // 移除无法匹配的点云数据
+        point_buf.pop();
         return false;
     }
 
-    // 同步图像数据：移除时间戳过早的图像消息
     while (1)
     {
         if (image_buf.front()->header.stamp.toSec() < frame_time - 0.01)
@@ -136,24 +128,20 @@ bool getAlignedData(Frame& cur_frame)
         }
         else break;
     }
-    // 检查图像数据时间戳是否在允许范围内
     if (image_buf.front()->header.stamp.toSec() > frame_time + 0.01)
     {
-        point_buf.pop();  // 移除无法匹配的点云数据
+        point_buf.pop();
         return false;
     }
 
-    // 获取同步的数据
     auto cur_point = point_buf.front();
     auto cur_pose = pose_buf.front();
     auto cur_image = image_buf.front();
 
-    // 将同步的数据赋值给输出参数
     cur_frame.point_msg = cur_point;
     cur_frame.pose_msg = cur_pose;
     cur_frame.image_msg = cur_image;
 
-    // 从缓冲区移除已使用的数据
     point_buf.pop();
     pose_buf.pop();
     image_buf.pop();
@@ -167,20 +155,16 @@ void printStatistics(torch::Tensor vals)
     double max_val = vals.max().item<double>();
     int bins = 10;
 
-    // 2. 执行直方图统计
     auto hist = torch::histc(vals, bins, min_val, max_val);
 
-    // 3. 计算并打印每个 bin 的范围和对应的计数
     double step = (max_val - min_val) / bins;
 
     for (int i = 0; i < bins; ++i) {
         double bin_start = min_val + i * step;
         double bin_end = (i == bins - 1) ? max_val : (min_val + (i + 1) * step);
-        
-        // 获取当前 bin 的计数
+
         int count = static_cast<int>(hist[i].item<float>());
-        
-        // 打印格式：[下界, 上界]: 数量
+
         printf("[%8.4f, %8.4f]: %d\n", bin_start, bin_end, count);
     }
 }
@@ -275,7 +259,6 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
     gaussians->setDA3DebugDir(result_path + "/da3_depth_vis");
     PoseEvalRecorder pose_eval_recorder(result_path);
 
-    // === SPNet 深度补全初始化 ===
     std::shared_ptr<SPNetWrapper> spnet = nullptr;
     if (node["spnet_model_path"]) {
         std::string spnet_path = node["spnet_model_path"].as<std::string>();
@@ -284,11 +267,10 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
         if (spnet->is_loaded()) {
             std::cout << "\033[1;32m[Mapping] SPNet loaded for depth completion\033[0m" << std::endl;
         } else {
-            spnet = nullptr;  // 加载失败则禁用
+            spnet = nullptr;
         }
     }
 
-    // === DA3 稠密深度初始化 ===
     std::shared_ptr<DA3Wrapper> da3 = nullptr;
     if (node["da3_model_path"]) {
         std::string da3_path = node["da3_model_path"].as<std::string>();
@@ -310,13 +292,11 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
     Frame cur_frame;
     while (!exit_flag)
     {
-        /// [1] data alignment
         m_buf.lock();
         bool align_flag = getAlignedData(cur_frame);
         m_buf.unlock();
         if (!align_flag) continue;
-        
-        /// [2] add every frame
+
         t_start = std::chrono::steady_clock::now();
         dataset->addFrame(cur_frame);
         torch::cuda::synchronize();
@@ -335,26 +315,22 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
 
         if (!gaussians->is_init_)
         {
-            // 地图尚未初始化时，仅允许关键帧触发初始化；
-            // 非关键帧此时缺少可用地图，无法执行基于渲染残差的位姿滤波。
+            // Skip non-keyframes until the map exists.
             if (!is_current_keyframe)
             {
                 pose_eval_recorder.recordFrame(current_camera, pose_eval_status);
                 continue;
             }
 
-            /// [3] initialize map
             gaussians->is_init_ = true;
             gaussians_initialized = true;
-            gaussians->initialize(dataset, spnet, da3);  // 传递 SPNet + DA3
+            gaussians->initialize(dataset, spnet, da3);
             gaussians->trainingSetup();
             pose_eval_recorder.recordFrame(current_camera, pose_eval_status);
         }
-        else 
+        else
         {
-            /// [3.5] 对所有当前帧执行同一套在线位姿滤波
-            /// 关键帧：位姿滤波后继续并入地图；
-            /// 非关键帧：位姿滤波后仅保存 refined pose，不进入 extend/optimize。
+            // Run the same pose refinement on both keyframes and non-keyframes.
             const int current_keyframe_idx = static_cast<int>(dataset->train_cameras_.size()) - 1;
             if (gaussians->enable_pose_refinement_ &&
                 current_keyframe_idx >= gaussians->pose_refine_start_frame_ &&
@@ -426,32 +402,29 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
 
             if (is_current_keyframe)
             {
-                /// [4] 只有关键帧使用滤波后的位姿并入地图
                 t_start = std::chrono::steady_clock::now();
-                extend(dataset, gaussians, spnet, da3);  // 传递 SPNet + DA3
+                extend(dataset, gaussians, spnet, da3);
                 torch::cuda::synchronize();
                 t_end = std::chrono::steady_clock::now();
                 total_extending_time += std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
             }
             else
             {
-                // 非关键帧只做一次当前帧位姿滤波，不参与地图扩展与地图优化。
+                // Non-keyframes only update their current pose estimate.
                 continue;
             }
         }
 
-        /// [5] optimize map
         t_start = std::chrono::steady_clock::now();
         double updated_num = optimize(dataset, gaussians);
         torch::cuda::synchronize();
         t_end = std::chrono::steady_clock::now();
         total_mapping_time += std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
-        std::cout << std::fixed << std::setprecision(2) 
-                  << "\033[1;36m Update " << updated_num / 10000 
+        std::cout << std::fixed << std::setprecision(2)
+                  << "\033[1;36m Update " << updated_num / 10000
                   << "w GS per Iter \033[0m" << std::endl;
     }
 
-    /// [6] evaluation
     std::cout << "Runtime Statistics"<<std::endl;
     std::cout << std::fixed << std::setprecision(2) << "Total Mapping Time: " << total_mapping_time << "s" << std::endl;
     std::cout << std::fixed << std::setprecision(2) << "Forward: " << gaussians->t_forward_ << "s" << std::endl;
@@ -461,11 +434,11 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
     std::cout << std::fixed << std::setprecision(2) << "Total Adding Time: " << total_adding_time << "s" << std::endl;
 
     std::cout << std::fixed << std::setprecision(2) << "Total Extending Time: " << total_extending_time << "s" << std::endl;
-    evaluateVisualQuality(dataset, gaussians, result_path, lpips_path, false);    
-    
+    evaluateVisualQuality(dataset, gaussians, result_path, lpips_path, false);
+
     if (generate_dataset) {
         std::cout << "[Dataset] Saving Final Dataset..." << std::endl;
-        evaluateVisualQuality(dataset, gaussians, result_path, lpips_path, true); // Final eval
+        evaluateVisualQuality(dataset, gaussians, result_path, lpips_path, true);
         gaussians->saveDataset(prm.dataset_path_, dataset);
     }
     else {
@@ -503,14 +476,11 @@ int main(int argc, char** argv)
     bool generate_dataset;
     if (nh.hasParam("generate_dataset")) {
         nh.getParam("generate_dataset", generate_dataset);
-    } 
+    }
     else {
         generate_dataset = config_node["generate_dataset"].as<bool>();
     }
 
-    // --- 日志重定向开始 ---
-    // 在获取到 dataset_path 后初始化日志文件
-    // 构造日志文件路径：确保 dataset_path 是有效的目录
     if (dataset_path.empty()) {
         std::cerr << "Error: dataset_path is empty!" << std::endl;
         return 1;
@@ -520,11 +490,11 @@ int main(int argc, char** argv)
     {
         log_file_path = dataset_path + "/gaussian_lic_log.txt";
     }
-    else 
+    else
     {
         log_file_path = result_path + "/gaussian_lic_log.txt";
     }
-    
+
     if (!std::filesystem::exists(dataset_path)) {
         std::filesystem::create_directories(dataset_path);
     }
@@ -533,12 +503,6 @@ int main(int argc, char** argv)
     }
 
     std::ofstream log_file(log_file_path);
-    // 这里声明 unique_ptr 或直接声明对象需注意生命周期，必须覆盖 main 函数的剩余执行时间
-    // 由于 main 函数在程序结束前一直存在，直接在栈上声明即可
-    // 但因为 TeeBuf 需要持有 streambuf 指针，这里我们需要确保 log_file 和 tee_buf 
-    // 在 restoration 之前一直有效。
-    
-    // 如果 result_path 为空，可能导致无法打开文件，加个判断比较稳妥（可选，视用户需求）
     TeeBuf* tee_buf = nullptr;
     std::streambuf* old_cout_buf = nullptr;
 
@@ -549,30 +513,27 @@ int main(int argc, char** argv)
     } else {
         std::cout << "\n[Warning] Could not open log file at: " << log_file_path << " (result_path might be empty or invalid)" << std::endl;
     }
-    // --- 日志重定向结束 ---
-
     std::thread mapping_process(mapping, config_node, result_path, lpips_path);
     std::thread monitor_thread([](){
-        while (!exit_flag) 
+        while (!exit_flag)
         {
             double now = ros::Time::now().toSec();
-            if (gaussians_initialized && (now - last_point_time > 5.0) && image_buf.empty()) 
+            if (gaussians_initialized && (now - last_point_time > 5.0) && image_buf.empty())
             {
-                exit_flag = true;  // exit if no data is received for more than 1 second
-            } 
+                exit_flag = true;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
     });
-    
+
     ros::spin();
 
     mapping_process.join();
     monitor_thread.join();
 
-    // --- 恢复 cout ---
     if (old_cout_buf) {
         std::cout.rdbuf(old_cout_buf);
-        delete tee_buf; // 释放堆上分配的 TeeBuf
-    }    
+        delete tee_buf;
+    }
     return 0;
 }
