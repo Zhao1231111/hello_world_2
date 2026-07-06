@@ -8,12 +8,12 @@ cy: 266.985989326
 select_every_k_frame: 5
 
 sh_degree: 3
-white_background: false  # no adjustment needed
-random_background: false  # no adjustment needed
-convert_SHs_python: false  # no adjustment needed
-compute_cov3D_python: false  # no adjustment needed
-lambda_erank: 0  # no adjustment needed
-scaling_scale: 1  # 2 for less Gaussians
+white_background: false
+random_background: false
+convert_SHs_python: false
+compute_cov3D_python: false
+lambda_erank: 0
+scaling_scale: 1
 
 position_lr: 0.00016
 feature_lr: 0.0025
@@ -24,12 +24,12 @@ lambda_dssim: 0.2
 
 apply_exposure: false
 exposure_lr: 0.001
-skybox_points_num: 100000  # 0 for indoor
+skybox_points_num: 100000  # Use 0 for indoor scenes.
 skybox_radius: 1000
 
-# === SPNet 深度补全配置 ===
-# spnet_model_path: "/path/to/spnet_model.pt"  # TorchScript 模型路径，取消注释并填写实际路径以启用
-# spnet_max_depth: 100.0                        # 最大深度值 (室外=100m, 室内=20m)
+# SPNet is optional.
+# spnet_model_path: /path/to/your/spnet_model.pt
+# spnet_max_depth: 100.0
 # spnet_epsilon_1: 0.3
 # spnet_epsilon_2: 80.0
 # spnet_patch_size: 30
