@@ -1,7 +1,4 @@
-/**
- * @file backward.h
- * @brief 2D高斯光栅化反向传播头文件
- */
+
 
 #ifndef CUDA_RASTERIZER_BACKWARD_H_INCLUDED
 #define CUDA_RASTERIZER_BACKWARD_H_INCLUDED
@@ -14,9 +11,7 @@
 
 namespace BACKWARD
 {
-	/**
-	 * @brief 渲染阶段的反向传播：计算对颜色、深度、不透明度、变换矩阵等的梯度
-	 */
+
 	void render(
 		const dim3 grid, dim3 block,
 		const uint2* ranges,
@@ -39,9 +34,7 @@ namespace BACKWARD
 		float* dL_dopacity,
 		float* dL_dcolors);
 
-	/**
-	 * @brief 预处理阶段的反向传播：将梯度传播回原始 3D 参数（位置、旋转、缩放、SH）
-	 */
+
 	void preprocess(
 		int P, int D, int M,
 		const float3* means,

@@ -1,7 +1,4 @@
-/**
- * @file auxiliary.h
- * @brief 2D高斯光栅化器辅助数学函数和常量定义
- */
+
 
 #ifndef CUDA_RASTERIZER_AUXILIARY_H_INCLUDED
 #define CUDA_RASTERIZER_AUXILIARY_H_INCLUDED
@@ -19,25 +16,21 @@
 #define TIGHTBBOX 0
 #define RENDER_AXUTILITY 1
 
-// 输出缓冲区各分量的偏移量
 #define DEPTH_OFFSET 0
 #define ALPHA_OFFSET 1
-#define NORMAL_OFFSET 2 
+#define NORMAL_OFFSET 2
 #define MIDDEPTH_OFFSET 5
 #define DISTORTION_OFFSET 6
 
-// 畸变渲染辅助宏
 #define BACKFACE_CULL 1
 #define DUAL_VISIABLE 1
 #define DETACH_WEIGHT 0
 
-// 常量定义
-__device__ const float near_n = 0.2;            // 近平面距离
-__device__ const float far_n = 100.0;           // 远平面距离
-__device__ const float FilterSize = 0.707106;   // 2DGS低通滤波尺寸 (sqrt(2)/2)
-__device__ const float FilterInvSquare = 2.0f;  // 滤波项系数
+__device__ const float near_n = 0.2;
+__device__ const float far_n = 100.0;
+__device__ const float FilterSize = 0.707106;
+__device__ const float FilterInvSquare = 2.0f;
 
-// 球谐函数(Spherical Harmonics)基数
 __device__ const float SH_C0 = 0.28209479177387814f;
 __device__ const float SH_C1 = 0.4886025119029199f;
 __device__ const float SH_C2[] = {
@@ -57,25 +50,13 @@ __device__ const float SH_C3[] = {
 	-0.5900435899266435f
 };
 
-/**
- * @brief 将 NDC 坐标转换为像素坐标
- * @param v NDC 坐标分量 (-1 到 1)
- * @param S 对应的图像维度 (W 或 H)
- * @return 像素空间中的坐标
- */
+
 __forceinline__ __device__ float ndc2Pix(float v, int S)
 {
 	return ((v + 1.0) * S - 1.0) * 0.5;
 }
 
-/**
- * @brief 获取高斯点在屏幕上的 Tile 包围盒 (AABB)
- * @param p 像素中心坐标
- * @param max_radius 投影半径
- * @param rect_min [输出] 最小 Tile 坐标
- * @param rect_max [输出] 最大 Tile 坐标
- * @param grid Tile 网格尺寸
- */
+
 __forceinline__ __device__ void getRect(const float2 p, int max_radius, uint2& rect_min, uint2& rect_max, dim3 grid)
 {
 	rect_min = {
@@ -88,9 +69,7 @@ __forceinline__ __device__ void getRect(const float2 p, int max_radius, uint2& r
 	};
 }
 
-/**
- * @brief 使用 4x3 矩阵变换 3D 点
- */
+
 __forceinline__ __device__ float3 transformPoint4x3(const float3& p, const float* matrix)
 {
 	float3 transformed = {
@@ -101,9 +80,7 @@ __forceinline__ __device__ float3 transformPoint4x3(const float3& p, const float
 	return transformed;
 }
 
-/**
- * @brief 使用 4x4 矩阵变换 3D 点（含齐次分量）
- */
+
 __forceinline__ __device__ float4 transformPoint4x4(const float3& p, const float* matrix)
 {
 	float4 transformed = {
@@ -115,9 +92,7 @@ __forceinline__ __device__ float4 transformPoint4x4(const float3& p, const float
 	return transformed;
 }
 
-/**
- * @brief 变换 3D 向量 (不含平移)
- */
+
 __forceinline__ __device__ float3 transformVec4x3(const float3& p, const float* matrix)
 {
 	float3 transformed = {
@@ -128,9 +103,7 @@ __forceinline__ __device__ float3 transformVec4x3(const float3& p, const float* 
 	return transformed;
 }
 
-/**
- * @brief 变换 3D 向量（使用转置矩阵）
- */
+
 __forceinline__ __device__ float3 transformVec4x3Transpose(const float3& p, const float* matrix)
 {
 	float3 transformed = {
@@ -141,7 +114,6 @@ __forceinline__ __device__ float3 transformVec4x3Transpose(const float3& p, cons
 	return transformed;
 }
 
-// 归一化梯度的辅助函数系列
 __forceinline__ __device__ float dnormvdz(float3 v, float3 dv)
 {
 	float sum2 = v.x * v.x + v.y * v.y + v.z * v.z;
@@ -177,7 +149,6 @@ __forceinline__ __device__ float4 dnormvdv(float4 v, float4 dv)
 	return dnormvdv;
 }
 
-// 向量运算符重载
 __forceinline__ __device__ float3 cross(float3 a, float3 b){return make_float3(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x);}
 __forceinline__ __device__ float3 operator*(float3 a, float3 b){return make_float3(a.x * b.x, a.y * b.y, a.z*b.z);}
 __forceinline__ __device__ float2 operator*(float2 a, float2 b){return make_float2(a.x * b.x, a.y * b.y);}
@@ -194,16 +165,7 @@ __forceinline__ __device__ float2 minf2(float f, float2 a){return make_float2(mi
 __forceinline__ __device__ float3 maxf3(float f, float3 a){return make_float3(max(f, a.x), max(f, a.y), max(f, a.z));}
 __forceinline__ __device__ float2 maxf2(float f, float2 a){return make_float2(max(f, a.x), max(f, a.y));}
 
-/**
- * @brief 视锥体剔除检查（含近平面裁剪和预过滤断言）
- * @param idx 高斯点索引
- * @param orig_points 3D 中心位置
- * @param viewmatrix 视图矩阵
- * @param projmatrix 投影矩阵
- * @param prefiltered 预过滤标志（若为 true 且被裁剪且触发 Trap）
- * @param p_view [输出] 相机坐标系下的位置
- * @return 是否可见
- */
+
 __forceinline__ __device__ bool in_frustum(int idx,
 	const float* orig_points,
 	const float* viewmatrix,
@@ -213,16 +175,13 @@ __forceinline__ __device__ bool in_frustum(int idx,
 {
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
 
-	// 1. 将点投影到屏幕空间 (裁剪坐标系)
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
 	float p_w = 1.0f / (p_hom.w + 0.0000001f);
 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
-    
-	// 2. 将点变换到相机视图空间 (View Space)
+
 	p_view = transformPoint4x3(p_orig, viewmatrix);
 
-	// 3. 近平面判定：剔除深度小于 0.2 的点
-	if (p_view.z <= 0.2f)// || ((p_proj.x < -1.3 || p_proj.x > 1.3 || p_proj.y < -1.3 || p_proj.y > 1.3)))
+	if (p_view.z <= 0.2f)
 	{
 		if (prefiltered)
 		{
@@ -234,10 +193,7 @@ __forceinline__ __device__ bool in_frustum(int idx,
 	return true;
 }
 
-/**
- * @brief 将四元数转换为旋转矩阵 (3x3)
- * 参考 gsplat: https://github.com/nerfstudio-project/gsplat/blob/main/gsplat/cuda/csrc/forward.cu
- */
+
 inline __device__ glm::mat3 quat_to_rotmat(const glm::vec4 quat) {
 	float s = rsqrtf(
 		quat.w * quat.w + quat.x * quat.x + quat.y * quat.y + quat.z * quat.z
@@ -247,7 +203,6 @@ inline __device__ glm::mat3 quat_to_rotmat(const glm::vec4 quat) {
 	float y = quat.z * s;
 	float z = quat.w * s;
 
-	// glm 矩阵为列优先存储
 	return glm::mat3(
 		1.f - 2.f * (y * y + z * z),
 		2.f * (x * y + w * z),
@@ -261,9 +216,7 @@ inline __device__ glm::mat3 quat_to_rotmat(const glm::vec4 quat) {
 	);
 }
 
-/**
- * @brief 四元数转旋转矩阵的反向传播 (VJP)
- */
+
 inline __device__ glm::vec4
 quat_to_rotmat_vjp(const glm::vec4 quat, const glm::mat3 v_R) {
 	float s = rsqrtf(
@@ -301,9 +254,7 @@ quat_to_rotmat_vjp(const glm::vec4 quat, const glm::mat3 v_R) {
 	return v_quat;
 }
 
-/**
- * @brief 构建 2D 缩放矩阵 (3x3 对角矩阵)
- */
+
 inline __device__ glm::mat3
 scale_to_mat(const glm::vec2 scale, const float glob_scale) {
 	glm::mat3 S = glm::mat3(1.f);
@@ -321,9 +272,8 @@ throw std::runtime_error(cudaGetErrorString(ret)); \
 } \
 }
 
-// ========================== my code ==========================
 struct Quad {
-    float2 v[4]; // 四个顶点
+    float2 v[4];
 };
 
 #endif

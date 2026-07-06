@@ -4,8 +4,6 @@
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
 
-// step on a grid of size (N, M)
-// N is always number of gaussians
 __global__
 void adamUpdateCUDA(
     float* __restrict__ param,
