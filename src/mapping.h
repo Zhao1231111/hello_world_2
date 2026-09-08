@@ -126,6 +126,9 @@ public:
         spnet_patch_size = node["spnet_patch_size"] ? node["spnet_patch_size"].as<int>() : 30;
         spnet_dilate_radius = node["spnet_dilate_radius"] ? node["spnet_dilate_radius"].as<int>() : 0;
         spnet_depth_grad_threshold = node["spnet_depth_grad_threshold"] ? node["spnet_depth_grad_threshold"].as<float>() : 0.5f;
+        enable_spnet = node["enable_spnet"] ? node["enable_spnet"].as<bool>() : true;
+        enable_ablation_logging = node["enable_ablation_logging"] ? node["enable_ablation_logging"].as<bool>() : false;
+        experiment_seed = node["experiment_seed"] ? node["experiment_seed"].as<int>() : -1;
         spnet_use_depth_normal_rotation_init = node["spnet_use_depth_normal_rotation_init"] ? node["spnet_use_depth_normal_rotation_init"].as<bool>() : true;
         spnet_enforce_normal_face_camera = node["spnet_enforce_normal_face_camera"] ? node["spnet_enforce_normal_face_camera"].as<bool>() : true;
         spnet_fallback_view_ray_when_invalid = node["spnet_fallback_view_ray_when_invalid"] ? node["spnet_fallback_view_ray_when_invalid"].as<bool>() : true;
@@ -243,6 +246,9 @@ public:
     int spnet_patch_size;                      // patch采样大小
     int spnet_dilate_radius;                   // LiDAR mask膨胀半径
     float spnet_depth_grad_threshold;          // 深度梯度过滤阈值
+    bool enable_spnet;                         // 是否启用 SPNet 候选补点
+    bool enable_ablation_logging;              // 是否输出 SPNet 消融日志
+    int experiment_seed;                       // 固定实验随机种子；负值表示随机
     bool spnet_use_depth_normal_rotation_init; // 是否启用“深度法线驱动旋转初始化”
     bool spnet_enforce_normal_face_camera;     // 法线是否强制朝向相机
     bool spnet_fallback_view_ray_when_invalid; // 像素法线无效时是否回退视线法线

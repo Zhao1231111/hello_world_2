@@ -241,81 +241,65 @@ DepthCompletionResult complete_depth_for_keyframe(
 
 // my main function
 SPNetPointsResult get_spnet_points(
-    SPNetWrapper& spnet,
+    SPNetWrapper* spnet,
     const torch::Tensor& rgb,
     const torch::Tensor& sparse_depth,
     const DepthCompletionParams& params,
     const std::shared_ptr<Camera>& cam)
 {
     SPNetPointsResult res;
-    
-    // 1. 深度补全
-    auto result = complete_depth_for_keyframe(spnet, rgb, sparse_depth, params);
-    
-    if (!result.success) {
-        return res; 
-    }
-    
-    // 2. 强制融合 LiDAR 点
-    auto lidar_mask = sparse_depth > 0;
-    // Use torch::where for safer replacement
-    if (result.filtered_dense_depth.sizes() != sparse_depth.sizes()) {
-        std::cerr << "[DepthCompletion] Shape mismatch: " << result.filtered_dense_depth.sizes() << " vs " << sparse_depth.sizes() << std::endl;
-        return res;
-    }
-    torch::Tensor final_depth_map = torch::where(lidar_mask, sparse_depth, result.filtered_dense_depth);
-    
-    std::cout << "[DepthCompletion] Fused " << lidar_mask.sum().item<long>() << " LiDAR points." << std::endl;
-    
-    // 3. Determine valid pixels
-    // Instead of using the full dense completion, we only want:
-    // a) Existing LiDAR points
-    // b) The specifically sampled supplement points
-    
+    auto lidar_mask = (sparse_depth > 0) & torch::isfinite(sparse_depth);
     auto supplement_mask = torch::zeros_like(lidar_mask);
-    
-    if (!result.supplement_pixels.empty()) {
-        long num_supp = result.supplement_pixels.size();
-        // Create tensor from vector coordinates
-        auto opts = torch::TensorOptions().dtype(torch::kLong).device(torch::kCPU);
-        torch::Tensor indices = torch::empty({num_supp, 2}, opts);
-        auto acc = indices.accessor<long, 2>();
-        for(size_t i=0; i<num_supp; ++i) {
-            acc[i][0] = result.supplement_pixels[i].second; // y (row)
-            acc[i][1] = result.supplement_pixels[i].first;  // x (col)
+    torch::Tensor final_depth_map = sparse_depth.clone();
+
+    if (spnet != nullptr) {
+        auto result = complete_depth_for_keyframe(*spnet, rgb, sparse_depth, params);
+        if (!result.success) {
+            std::cerr << "[DepthCompletion] SPNet completion rejected; using LiDAR-only candidates for this frame."
+                      << std::endl;
+        } else if (result.filtered_dense_depth.sizes() != sparse_depth.sizes()) {
+            std::cerr << "[DepthCompletion] Shape mismatch: " << result.filtered_dense_depth.sizes()
+                      << " vs " << sparse_depth.sizes() << std::endl;
+            return res;
+        } else {
+            final_depth_map = torch::where(lidar_mask, sparse_depth, result.filtered_dense_depth);
+
+            if (!result.supplement_pixels.empty()) {
+                long num_supp = result.supplement_pixels.size();
+                auto opts = torch::TensorOptions().dtype(torch::kLong).device(torch::kCPU);
+                torch::Tensor indices = torch::empty({num_supp, 2}, opts);
+                auto acc = indices.accessor<long, 2>();
+                for(size_t i=0; i<num_supp; ++i) {
+                    acc[i][0] = result.supplement_pixels[i].second; // y (row)
+                    acc[i][1] = result.supplement_pixels[i].first;  // x (col)
+                }
+
+                indices = indices.to(lidar_mask.device());
+                supplement_mask.index_put_({indices.select(1, 0), indices.select(1, 1)}, true);
+            }
+
+            // LiDAR 始终优先；补点仍遵守 SPNet 的有效性过滤。
+            supplement_mask = supplement_mask & torch::logical_not(lidar_mask);
+            supplement_mask = supplement_mask & (result.filtered_mask > 0);
+            supplement_mask = supplement_mask & (final_depth_map > 0);
         }
-        
-        indices = indices.to(lidar_mask.device());
-        supplement_mask.index_put_({indices.select(1, 0), indices.select(1, 1)}, true);
     }
-    
+
     auto valid_pixel_mask = lidar_mask | supplement_mask;
-    
-    // Ensure we also respect the filter mask (edges, max depth) for safety, 
-    // although supplement points are already filtered.
-    valid_pixel_mask = valid_pixel_mask & (result.filtered_mask > 0);
-    valid_pixel_mask = valid_pixel_mask & (final_depth_map > 0);
-    
     auto flat_mask = valid_pixel_mask.view({-1}); // (N_pixels)
-    
-    // 4. Extract Data
+
     res.fused_depths = final_depth_map.view({-1, 1}).index({flat_mask});
-    
     auto rgb_hwc = rgb.permute({1, 2, 0});
     res.fused_colors = rgb_hwc.view({-1, 3}).index({flat_mask});
-    
-    // 5. Back-project Points (Camera -> World)
+    res.source_is_spnet = supplement_mask.view({-1}).index({flat_mask});
+
     int H = rgb.size(1);
     int W = rgb.size(2);
-    
     auto y_coords = torch::arange(H, torch::TensorOptions().device(rgb.device())).unsqueeze(1).repeat({1, W});
     auto x_coords = torch::arange(W, torch::TensorOptions().device(rgb.device())).unsqueeze(0).repeat({H, 1});
-    
     auto valid_x = x_coords.view({-1}).index({flat_mask}).to(torch::kFloat32);
     auto valid_y = y_coords.view({-1}).index({flat_mask}).to(torch::kFloat32);
     auto valid_depth = res.fused_depths.flatten();
-    
-    // Store Fused Pixels (u, v)
     res.fused_pixels = torch::stack({valid_x, valid_y}, 1);
 
     auto x_cam = (valid_x - cam->cx_) * valid_depth / cam->fx_;
@@ -324,7 +308,6 @@ SPNetPointsResult get_spnet_points(
     
     auto pts_cam = torch::stack({x_cam, y_cam, z_cam}, 1); // (N, 3)
     
-    // Transform to World Space
     Eigen::Matrix3d R_wc_eigen = cam->R_cw_.transpose();
     Eigen::Vector3d t_wc_eigen = -R_wc_eigen * cam->t_cw_;
     
@@ -338,9 +321,11 @@ SPNetPointsResult get_spnet_points(
         }
     }
     
-    // P_w = P_c @ R_wc.T + t_wc
     res.fused_points = torch::matmul(pts_cam, R_wc_tensor.t()) + t_wc_tensor.unsqueeze(0);
-    
+    res.success = true;
+    std::cout << "[DepthCompletion] Candidates: LiDAR="
+              << lidar_mask.sum().item<long>() << ", SPNet="
+              << supplement_mask.sum().item<long>() << std::endl;
     return res;
 }
 

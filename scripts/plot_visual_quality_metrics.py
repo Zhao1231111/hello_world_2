@@ -22,6 +22,7 @@ result_root/
 
 import argparse
 import csv
+import re
 from pathlib import Path
 
 import matplotlib
@@ -49,10 +50,12 @@ def load_records(csv_path: Path):
         reader = csv.DictReader(f)
         for row in reader:
             try:
+                frame_match = re.search(r"_(\d+)\.", row["image_name"])
+                parsed_frame_id = int(frame_match.group(1)) if frame_match else -1
                 records.append(
                     {
                         "image_name": row["image_name"],
-                        "frame_id": int(row["frame_id"]),
+                        "frame_id": int(row.get("frame_id") or parsed_frame_id),
                         "subset_index": int(row.get("subset_index", "-1")),
                         "psnr": float(row["psnr"]),
                         "ssim": float(row["ssim"]),

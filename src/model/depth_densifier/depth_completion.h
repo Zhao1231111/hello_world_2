@@ -151,10 +151,12 @@ DepthCompletionResult sample_from_patches(
  */
 struct SPNetPointsResult
 {
+    bool success = false;
     torch::Tensor fused_points;        ///< (N, 3) 世界坐标系下的点
     torch::Tensor fused_colors;        ///< (N, 3) RGB颜色 [0, 1]
     torch::Tensor fused_depths;        ///< (N, 1) 深度值
     torch::Tensor fused_pixels;        ///< (N, 2) 像素坐标 (u, v)
+    torch::Tensor source_is_spnet;     ///< (N) bool，true 表示 SPNet 补点
 };
 
 /**
@@ -170,7 +172,7 @@ struct SPNetPointsResult
  * @return SPNetPointsResult // 包含 points/colors/depths/pixels
  */
 SPNetPointsResult get_spnet_points(
-    SPNetWrapper& spnet,
+    SPNetWrapper* spnet,
     const torch::Tensor& rgb,
     const torch::Tensor& sparse_depth,
     const DepthCompletionParams& params,

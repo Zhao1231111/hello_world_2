@@ -151,6 +151,8 @@ public:
     int image_width_;              
     int image_height_;
     torch::Tensor original_image_;
+    // 输入 LiDAR 定义的固定盲区 mask，CPU bool，形状 (H, W)。
+    torch::Tensor lidar_blind_mask_;
           
     float fx_;
     float fy_;

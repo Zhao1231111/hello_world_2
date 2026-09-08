@@ -35,6 +35,7 @@
 #include <fstream>
 #include <sstream>
 #include <streambuf>
+#include <stdexcept>
 
 // 自定义的流缓冲区，将数据同时写入两个缓冲区（屏幕和文件）
 class TeeBuf : public std::streambuf {
@@ -231,6 +232,24 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
         prm.use_Gaussian_regress = ros_use_Gaussian_regress_;
         std::cout << "\033[1;32m [Config] Overrode use_Gaussian_regress from ROS launch param: " << (ros_use_Gaussian_regress_ ? "true" : "false") << " \033[0m" << std::endl;
     }
+    bool ros_enable_spnet;
+    if (ros::param::get("~enable_spnet", ros_enable_spnet)) {
+        prm.enable_spnet = ros_enable_spnet;
+        std::cout << "\033[1;32m [Config] Overrode enable_spnet from ROS launch param: "
+                  << (ros_enable_spnet ? "true" : "false") << " \033[0m" << std::endl;
+    }
+    bool ros_enable_ablation_logging;
+    if (ros::param::get("~enable_ablation_logging", ros_enable_ablation_logging)) {
+        prm.enable_ablation_logging = ros_enable_ablation_logging;
+    }
+    int ros_experiment_seed;
+    if (ros::param::get("~experiment_seed", ros_experiment_seed)) {
+        prm.experiment_seed = ros_experiment_seed;
+    }
+    if (prm.experiment_seed >= 0) {
+        torch::manual_seed(prm.experiment_seed);
+        std::cout << "[Config] Fixed experiment seed: " << prm.experiment_seed << std::endl;
+    }
     double ros_opacity_prune_forRegress;
     if (ros::param::get("~opacity_prune_forRegress", ros_opacity_prune_forRegress)) {
         prm.opacity_prune_forRegress = ros_opacity_prune_forRegress;
@@ -277,15 +296,19 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
 
     // === SPNet 深度补全初始化 ===
     std::shared_ptr<SPNetWrapper> spnet = nullptr;
-    if (node["spnet_model_path"]) {
+    if (prm.enable_spnet && node["spnet_model_path"]) {
         std::string spnet_path = node["spnet_model_path"].as<std::string>();
         float max_depth = node["spnet_max_depth"] ? node["spnet_max_depth"].as<float>() : 100.0f;
         spnet = std::make_shared<SPNetWrapper>(spnet_path, max_depth);
         if (spnet->is_loaded()) {
             std::cout << "\033[1;32m[Mapping] SPNet loaded for depth completion\033[0m" << std::endl;
         } else {
-            spnet = nullptr;  // 加载失败则禁用
+            throw std::runtime_error("SPNet was requested but the model failed to load");
         }
+    } else if (prm.enable_spnet) {
+        throw std::runtime_error("SPNet was requested but spnet_model_path is missing");
+    } else {
+        std::cout << "[Mapping] SPNet disabled; using LiDAR-only candidates." << std::endl;
     }
 
     // === DA3 稠密深度初始化 ===
@@ -298,6 +321,9 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
         } else {
             da3 = nullptr;
         }
+    }
+    if (prm.enable_ablation_logging && da3 == nullptr) {
+        throw std::runtime_error("DA3 must be available for the SPNet ablation");
     }
 
     bool generate_dataset = prm.generate_dataset_;
@@ -461,6 +487,20 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
     std::cout << std::fixed << std::setprecision(2) << "Total Adding Time: " << total_adding_time << "s" << std::endl;
 
     std::cout << std::fixed << std::setprecision(2) << "Total Extending Time: " << total_extending_time << "s" << std::endl;
+    if (gaussians->enable_ablation_logging_) {
+        const std::filesystem::path summary_path =
+            std::filesystem::path(result_path) / "ablation" / "runtime_summary.csv";
+        std::filesystem::create_directories(summary_path.parent_path());
+        std::ofstream summary(summary_path);
+        summary << "enable_spnet,spnet_calls,spnet_total_seconds,spnet_mean_ms,total_mapping_seconds,total_extending_seconds,final_gaussians\n";
+        const double mean_spnet_ms = gaussians->spnet_calls_ > 0
+            ? 1000.0 * gaussians->spnet_time_ / static_cast<double>(gaussians->spnet_calls_)
+            : 0.0;
+        summary << (gaussians->enable_spnet_ ? 1 : 0) << ","
+                << gaussians->spnet_calls_ << "," << gaussians->spnet_time_ << ","
+                << mean_spnet_ms << "," << total_mapping_time << ","
+                << total_extending_time << "," << gaussians->getXYZ().size(0) << "\n";
+    }
     evaluateVisualQuality(dataset, gaussians, result_path, lpips_path, false);    
     
     if (generate_dataset) {
@@ -474,6 +514,10 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
     }
 
     std::cout << "Gaussian-LIC Done!" << std::endl;
+    // mapping() runs on a worker thread while main() is blocked in ros::spin().
+    // Signal ROS only after the completion marker has been flushed so a
+    // successful run can exit naturally instead of requiring SIGTERM.
+    ros::shutdown();
 }
 
 int main(int argc, char** argv)

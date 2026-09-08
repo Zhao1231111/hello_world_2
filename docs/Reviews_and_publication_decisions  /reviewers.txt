@@ -1,0 +1,265 @@
+Review ID	Reviewer number	Comments to the author	Attachment
+536382	1	
+Summary: This work, LIV-Surfel, presents an incremental
+LiDAR-inertial-visual 2D Gaussian Splatting back-end that uses
+completed depth, monocular normal priors, candidate screening, and a
+feed-forward network to predict surfel attributes at insertion time.
+The network is trained by self-distillation from attributes obtained
+after online optimization, and the paper reports improved novel-view
+rendering metrics and early post-insertion convergence relative to
+selected baselines.
+
+Strengths: 
+1. The paper identifies a key issue in incremental Gaussian mapping:
+newly inserted primitives receive limited optimization updates before
+impacting rendering. The proposed solution predicts insertion
+attributes from the current rendering state and historical visual
+context, effectively addressing this problem.
+2. The surfel rotation design in Section III-C is sensible. Equations
+(4)-(5) construct a surfel frame around a corrected normal, aligning
+with the surface-oriented nature of 2DGS, rather than predicting an
+unconstrained quaternion.
+3. Table I shows results for R3LIVE, MCD, and a self-collected dataset,
+with improvements over Gaussian-LIC2. Figure 3 visually confirms the
+reduction of blur and trailing artifacts.
+
+Weakness:
+1. The evaluation does not confirm the system's real-time or online
+feasibility, despite being framed as such. Sections I and III describe
+an incremental mapping back-end for each keyframe, while Figure 1
+outlines a complete online pipeline that includes various processing
+steps. However, Section IV-A provides hardware specs but lacks crucial
+per-module runtimes, keyframe processing times, rendering speeds, and
+memory usage details. This is significant since the DA3 model and
+multi-view feature extraction could add considerable computational
+costs compared to simpler methods. The authors should include a
+detailed timing breakdown, keyframe rates, map growth statistics,
+memory peaks, and costs linked to the regressor and external networks.
+2. The paper claims geometry-aware mapping but only evaluates
+image-rendering metrics like PSNR, SSIM, and LPIPS. It lacks depth
+error, normal error, and comparisons with LiDAR geometry, which are
+essential to verify if the normal-guided rotation branch truly improves
+surface geometry. The authors should include geometry metrics against
+LiDAR and compare surfel normal consistency with and without the
+normal-guided branch.
+3. The ablation does not isolate the proposed regressor from other
+system changes, limiting its ability to validate the general claim.
+Table II compares "Baseline" versus "Ours" on hku_campus_00, while
+Table III shows early rendering trajectories, indicating improvement
+with the full learned-initialization configuration. However, it fails
+to identify contributions from individual components (e.g. historical
+context, cross-attention, and more)
+and does not assess the impact of 2DGS or other elements on
+performance. The authors should include component ablations across
+multiple sequences, such as rule-based 2DGS initialization, direct
+attribute regression without geometric priors, and others. 
+ 
+536384	3	
+The paper introduces LIV-Surfel, a feed-forward system for incremental
+scene reconstruction relying on geometric priors and 2D Gaussian
+Splatting surfels representation. The training is conducted in a
+self-distillation fashion. Experiments are conducted on a bespoke,
+R3LIVE, and MCD datasets, showing an improvement. 
+
+S:
+
+-	Introducing geometric priors from depth estimators is a
+promising direction, orthogonal to only data-scaling
+-	Using normals to constrain 2DGS surfaces sounds reasonable and
+logical step
+-	The simple design of geometric priors can have potential to be
+easily adopted into other works
+-	Straightforward combination of the multimodal setup
+
+W:
+
+-	The complexity of the system design.
+As set out in "A System Overview" and Fig1, there is a multimodal setup
+of IMU, Camera and LiDAR. The paper nevertheless argues that the sparse
+LiDAR is insufficient to provide geometric guidance and thus use SPNet
+to perform depth completion, and even then the paper argues that this
+is still not a reliable source of information and finally use DA3 as
+the actual depth estimator, while LiDAR serves only to establish the
+scale. My question is then, is the LiDAR necessary at all? Since there
+is IMU on board the scale for the DA3 can be established (IMU - yields
+acceleration and angular velocity in physical units m/s² and rad/s).
+Have you considered any ablation on that scenario? This will reduce the
+method's hardware requirements.
+
+-	Reliance on DA3
+It might be that the superior performance of the presented method
+relies on the powerful DA3 rather than on the novelty of the method
+itself. It would be important to discern that. Have there been any
+other depth estimators considered and compared? Is the performance
+generally applicable to any depth estimators, or it largely varies
+depending on their performance (especially stable normals)? Also, the
+DA3 has an estimation of metric depth, please see also Sec 7.4
+https://arxiv.org/pdf/2511.10647 and the used baselines -- this will
+allow for reducing the system complexity to only cameras? I think the
+paper would benefit from a discussion on the aspect of a) reliance on
+DA3, b) comparison of the metric depth estimation vs metric
+sensed/grounded from LiDAR/IMU c) the impact on the geometric prior if
+swapped with 2-3 other estimators (accurate normal estimation seems to
+be the key aspect)
+
+-	Geometric priors’ choice
+In the literature there are multiple geometric priors explored
+throughout the years considering their uncertainty, using them
+explicitly or implicitly (e.g., https://arxiv.org/pdf/2403.17822,
+DN-Splatter at WACV,
+https://proceedings.neurips.cc/paper_files/paper/2024/file/fc9f83d9925e
+6885e8f1ae1e17b3c44b-Paper-Conference.pdf VCR-GauS at NeurIPS,
+https://arxiv.org/pdf/2410.13862 DepthSplat at CVPR,
+https://arxiv.org/pdf/2604.26238 EnerGS at ICML,
+https://arxiv.org/pdf/2505.05591 QuickSplat at CVPR, just to name a few
+directions). In the presented method design, there is little
+justification for the selected set, which also seems quite
+straightforward and using normals is quite popular and not new (as
+above and in the RWs of those papers) – which is fair as long as there
+is any evidence that supports this simplicity. Also, there is no
+ablation provided later in the experiments. In the revision, I would
+expect a detailed elaboration on the choice, supported with tables
+and/or figures showing the benefits during training and/or inference
+stages of that design, also preferably juxtaposed with more complex and
+more abstract features, e.g., planarity (especially that the method
+assumes 2D GS), curvature.
+Also, the “validity mask” is considered as one of the geometric priors,
+which is confusing for two reasons: a) the term “validity mask” is not
+defined in the paper or at least I have not found it, please correct me
+if I missed it b) how is the masked considered as part of the
+“geometry”? Maybe it comes form my confusion regarding the definition.
+
+- Computational overhead
+The comparison concentrates on the accuracy results. Also, there is
+visualisation for better and faster convergence, which is still rather
+limited to one Fig 4 and Tab III, with only fixed 16 steps (but only
+reported in Tab III and not present in Figure 4). Why this specific
+number has been selected? Why the 16 step is missing in Fig4? And can
+it also be that the priors bias to faster convergence which also leads
+to being stuck in a (pre-mature) local minima? Also, there is no
+comparison on the training time or inference time nor on parameters.
+The paper would benefit from such analysis in comparison to selected
+baselines.
+
+-	Evaluation data
+It seems that the evaluation is constrained to a very specific sensor
+and system setup, mainly Livox. Also, the justification for the bespoke
+dataset is not provided, with little details on the acquisition and
+open sourcing after the submission acceptance. The paper would benefit
+from stronger justification of the data used and testing on popular
+benchmarks (comprising LiDAR) like Waymo or KITTI datasets, for
+example.
+
+-	Selected baselines
+The paper argues that there are methods similar to their setup (II
+RELATED WORK), however the compared methods seem to be quite limited
+and only three baselines are selected for the comparison. I have not
+found any justification for this set of baselines, and it seems
+contradicting to the RWs part, where multiple RWs are listed. I would
+expect adding a few related baselines from the authors’ RWs or
+providing a justification for the limited set of baselines. Also, the
+reported improvement is limited to only 1.28 dB PSNR, which might turn
+out lower while extending the baseline comparison (which does not
+necessarily invalidate the method contribution, but the pros and cons
+should be clearly stated).
+
+- Lack of Limitations Section
+...which brings me to the lack of Limitations Section. The Limitations
+should be explicitly stated in the paper to better position the paper
+with its pros and cons witihin the large landscape of GS-related
+methods. This will only improve the overall paper quality. 
+
+Minor:
+-	The yellow boxes in Fig 3 seem to be quite selective – the
+differences should be observable throughout the sub-images 
+-	“normal semantics” is used several times – it reads a bit
+confusing, usually semantics pertains to classes / sem segments (more
+abstract) rather than to only a geometrical feature 
+ 
+ 
+543321	4	
+Paper Summary:
+The paper proposes LIV-Surfel, a system designed to improve the
+initialization of new Gaussians in incremental 3D Gaussian Splatting
+(GS) mapping. The core problem addressed is that traditional rule-based
+or random initializations often lead to local minima, "popping"
+artifacts, and slow convergence during online optimization.
+
+The authors introduce a feed-forward regression network that predicts
+the initial attributes of 2D surfels (scale, rotation, opacity, and SH
+coefficients) by leveraging multi-modal priors: dense depth completion
+via SPNet and normal estimation via Depth Anything 3 (DA3). To bypass
+the lack of ground-truth labels for Gaussian attributes, the authors
+employ a self-distillation training strategy, using the refined state
+of the map after optimization as the target. Experimental results on
+RLIVE and MCD datasets indicate that LIV-Surfel achieves higher
+rendering quality (PSNR/SSIM) and reaches convergence significantly
+faster than baselines like MonoGS and Gaussian-LIC2.
+
+Strengths:
+- The focus on the "initialization bottleneck" in incremental GS is
+highly relevant and well-motivated, as this is a known pain point for
+real-time mapping stability.
+- The use of cross-attention over a sliding window of keyframes allows
+the model to capture temporal and multi-view consistency, which is
+appropriate for the SLAM context.
+- The self-distillation loop is an elegant way to train a regressor in
+a domain where explicit labels are unavailable.
+- The quantitative improvements and the convergence analysis provide
+strong evidence that the method reduces the reliance on expensive
+iterative optimization.
+- The paper is well structured and presented.
+
+Weaknesses:
+- The most significant concern is the redundancy between SPNet and
+Depth Anything 3 (DA3). The current pipeline runs two separate, dense
+estimation paths: one for metric depth completion (SPNet) and one for
+relative depth/normals (DA3).
+
+Because DA3 already produces high-quality dense relative depth maps,
+the authors and the authors already scale these outputs using the
+sparse LiDAR points to obtain metric dense depth. This single path
+would provide both the metric depth and the surface normals in one
+shot. Running both SPNet and DA3 introduces GPU memory overhead and
+latency without a clear justification for why a scaled-foundation-model
+approach is insufficient.
+
+- The authors emphasize that their method reduces the number of
+optimization steps required (e.g. reaching thresholds in 4 steps vs
+16). However, there is no analysis of the actual time cost of the
+feed-forward inference pass. If the computational cost of running a
+cross-attention network over multiple keyframes and two dense
+estimation models (SPNet + DA3) exceeds the cost of those saved
+iterations, the "efficiency" claim is purely theoretical and not
+practically beneficial.
+
+- The self-distillation loop assumes that the optimized map is a
+reliable target. However, in incremental SLAM, drift is inherent. If
+the optimizer overfits to a drifted state or produces artifacts, the
+regressor will learn to predict these errors as truth. The paper does
+not discuss how it prevents this confirmation bias loop or if any
+filtering/regularization is applied to the distillation targets to
+ensure only high-quality Gaussians are used for training.
+
+- While Table 3 shows that the method converges faster, it is unclear
+whether it reaches a better local optimum than the baseline after an
+equal number of total steps (e.g., 32 or 64). If the regressor only
+speeds up convergence to the same point, its value is purely
+latency-based.
+
+Questions for Authors
+1- Why is SPNet required alongside DA3? Could the authors provide an
+ablation study showing that scaling DA3's relative depth with LiDAR
+performs worse than using SPNet?
+2- What is the average inference time (ms) of the regressor per frame,
+and how does this compare to the time saved by reducing optimization
+steps? A comparison to the other method run times helps explain if the
+quality improvements are "justified".
+3- What is the parameter count and memory footprint of the regression
+network? Is it viable for deployment on embedded systems common in
+LiDAR-Inertial setups? and how does it compare to the existing methods?
+
+Citation comments (not comprehensive, please verify all):
+[7] is cited from arXiv while the paper was published at ECCV
+[9] has the wrong year
+[15] has the wrong year 

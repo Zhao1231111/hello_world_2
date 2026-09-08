@@ -38,6 +38,7 @@
 #include <Eigen/Geometry>
 #include <torch/script.h>
 #include <memory>
+#include <stdexcept>
 #include "simple-knn/simple_knn.h"
 
 namespace fs = std::filesystem;
@@ -83,6 +84,80 @@ void saveTensorImageAsBgr(const torch::Tensor& image_chw, const std::string& ima
     cv::Mat bgr_mat;
     cv::cvtColor(image_mat, bgr_mat, cv::COLOR_RGB2BGR);
     cv::imwrite(image_path, bgr_mat);
+}
+
+void appendCandidateFlow(const std::string& result_path,
+                         const std::string& image_name,
+                         int64_t lidar_candidates,
+                         int64_t spnet_proposed,
+                         int64_t spnet_inserted,
+                         int64_t total_inserted)
+{
+    const fs::path csv_path = fs::path(result_path) / "ablation" / "candidate_flow.csv";
+    fs::create_directories(csv_path.parent_path());
+    const bool write_header = !fs::exists(csv_path);
+    std::ofstream ofs(csv_path, std::ios::app);
+    if (!ofs.is_open()) {
+        std::cerr << "[Ablation] Cannot write candidate flow: " << csv_path << std::endl;
+        return;
+    }
+    if (write_header) {
+        ofs << "image_name,lidar_candidates,spnet_proposed,spnet_inserted,total_inserted,spnet_insert_rate\n";
+    }
+    const double insert_rate = spnet_proposed > 0
+        ? static_cast<double>(spnet_inserted) / static_cast<double>(spnet_proposed)
+        : std::numeric_limits<double>::quiet_NaN();
+    ofs << image_name << "," << lidar_candidates << "," << spnet_proposed << ","
+        << spnet_inserted << "," << total_inserted << "," << insert_rate << "\n";
+}
+
+torch::Tensor buildLidarBlindMask(const pcl::PointCloud<pcl::PointXYZRGB>& cloud,
+                                  const Eigen::Matrix3d& R_wc,
+                                  const Eigen::Vector3d& t_wc,
+                                  int width,
+                                  int height,
+                                  double fx,
+                                  double fy,
+                                  double cx,
+                                  double cy,
+                                  int patch_size)
+{
+    patch_size = std::max(1, patch_size);
+    const int patch_rows = (height + patch_size - 1) / patch_size;
+    const int patch_cols = (width + patch_size - 1) / patch_size;
+    std::vector<uint8_t> occupied(static_cast<size_t>(patch_rows * patch_cols), 0);
+    const Eigen::Matrix3d R_cw = R_wc.transpose();
+    const Eigen::Vector3d t_cw = -R_cw * t_wc;
+
+    for (const auto& pt : cloud.points) {
+        const Eigen::Vector3d point_c = R_cw * Eigen::Vector3d(pt.x, pt.y, pt.z) + t_cw;
+        if (point_c.z() <= 0.0) continue;
+        const int u = static_cast<int>(point_c.x() * fx / point_c.z() + cx);
+        const int v = static_cast<int>(point_c.y() * fy / point_c.z() + cy);
+        if (u < 0 || u >= width || v < 0 || v >= height) continue;
+        occupied[static_cast<size_t>((v / patch_size) * patch_cols + (u / patch_size))] = 1;
+    }
+
+    auto mask = torch::empty({height, width}, torch::TensorOptions().dtype(torch::kBool).device(torch::kCPU));
+    auto accessor = mask.accessor<bool, 2>();
+    for (int v = 0; v < height; ++v) {
+        for (int u = 0; u < width; ++u) {
+            accessor[v][u] = occupied[static_cast<size_t>((v / patch_size) * patch_cols + (u / patch_size))] == 0;
+        }
+    }
+    return mask;
+}
+
+void saveSingleChannelImage(const torch::Tensor& image_hw, const std::string& image_path)
+{
+    auto image_u8 = image_hw.detach().to(torch::kCPU).contiguous();
+    if (image_u8.scalar_type() == torch::kBool) {
+        image_u8 = image_u8.to(torch::kU8).mul(255);
+    } else {
+        image_u8 = image_u8.to(torch::kFloat32).mul(255).clamp(0, 255).to(torch::kU8);
+    }
+    cv::Mat image_mat(image_u8.size(0), image_u8.size(1), CV_8UC1, image_u8.data_ptr<uint8_t>());
+    cv::imwrite(image_path, image_mat);
 }
 
 void logDatasetTensorHealth(const std::string& name, const torch::Tensor& tensor)
@@ -222,11 +297,12 @@ void appendTrainVisualEvalHistory(const fs::path& train_dir,
 struct FrameMetricRecord
 {
     std::string image_name;
-    int frame_id = -1;
-    int subset_index = -1;
     double psnr = std::numeric_limits<double>::quiet_NaN();
     double ssim = std::numeric_limits<double>::quiet_NaN();
     double lpips = std::numeric_limits<double>::quiet_NaN();
+    double blind_ratio = std::numeric_limits<double>::quiet_NaN();
+    double blind_psnr = std::numeric_limits<double>::quiet_NaN();
+    double blind_alpha_coverage = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct VisualQualityEvalResult
@@ -235,6 +311,8 @@ struct VisualQualityEvalResult
     double mean_psnr = std::numeric_limits<double>::quiet_NaN();
     double mean_ssim = std::numeric_limits<double>::quiet_NaN();
     double mean_lpips = std::numeric_limits<double>::quiet_NaN();
+    double mean_blind_psnr = std::numeric_limits<double>::quiet_NaN();
+    double mean_blind_alpha_coverage = std::numeric_limits<double>::quiet_NaN();
 };
 
 double computeMeanOrNaN(double sum, size_t count)
@@ -256,15 +334,16 @@ void savePerFrameMetricsCsv(const fs::path& csv_path,
         return;
     }
 
-    ofs << "image_name,frame_id,subset_index,psnr,ssim,lpips\n";
+    ofs << "image_name,psnr,ssim,lpips,blind_ratio,blind_psnr,blind_alpha_coverage\n";
     ofs << std::fixed << std::setprecision(8);
     for (const auto& record : records) {
         ofs << record.image_name << ","
-            << record.frame_id << ","
-            << record.subset_index << ","
             << record.psnr << ","
             << record.ssim << ","
-            << record.lpips << "\n";
+            << record.lpips << ","
+            << record.blind_ratio << ","
+            << record.blind_psnr << ","
+            << record.blind_alpha_coverage << "\n";
     }
 }
 
@@ -276,13 +355,18 @@ VisualQualityEvalResult evaluateCameraSplit(
     const std::shared_ptr<torch::jit::script::Module>& lpips_module,
     bool save_image,
     const std::string& render_dir_path,
-    const std::string& gt_dir_path)
+    const std::string& gt_dir_path,
+    const std::string& blind_mask_dir_path,
+    const std::string& alpha_dir_path)
 {
     VisualQualityEvalResult result;
     double psnr_sum = 0.0;
     double ssim_sum = 0.0;
     double lpips_sum = 0.0;
     size_t valid_lpips_count = 0;
+    double blind_psnr_sum = 0.0;
+    double blind_alpha_coverage_sum = 0.0;
+    size_t valid_blind_count = 0;
 
     for (size_t camera_idx = 0; camera_idx < cameras.size(); ++camera_idx) {
         const auto& camera = cameras[camera_idx];
@@ -294,6 +378,27 @@ VisualQualityEvalResult evaluateCameraSplit(
         const double psnr = loss_utils::psnr(rendered_image, gt_image).mean().item<double>();
         const double ssim = loss_utils::ssim(rendered_image, gt_image).item<double>();
 
+        double blind_ratio = std::numeric_limits<double>::quiet_NaN();
+        double blind_psnr = std::numeric_limits<double>::quiet_NaN();
+        double blind_alpha_coverage = std::numeric_limits<double>::quiet_NaN();
+        torch::Tensor blind_mask;
+        if (camera->lidar_blind_mask_.defined() && camera->lidar_blind_mask_.numel() > 0) {
+            blind_mask = camera->lidar_blind_mask_.to(rendered_image.device()).to(torch::kBool);
+            const int64_t blind_pixels = blind_mask.sum().item<int64_t>();
+            blind_ratio = static_cast<double>(blind_pixels) / static_cast<double>(blind_mask.numel());
+            if (blind_pixels > 0) {
+                auto pixel_mse = torch::pow(rendered_image - gt_image, 2).mean(0);
+                const double mse = pixel_mse.masked_select(blind_mask).mean().item<double>();
+                blind_psnr = -10.0 * std::log10(std::max(mse, 1e-10));
+                auto rendered_alpha = render_pkg.rendered_alpha.squeeze();
+                blind_alpha_coverage = (rendered_alpha.masked_select(blind_mask) > pc->alpha_threshold_)
+                    .to(torch::kFloat32).mean().item<double>();
+                blind_psnr_sum += blind_psnr;
+                blind_alpha_coverage_sum += blind_alpha_coverage;
+                ++valid_blind_count;
+            }
+        }
+
         double lpips = std::numeric_limits<double>::quiet_NaN();
         if (lpips_module != nullptr) {
             std::vector<torch::jit::IValue> inputs;
@@ -304,19 +409,15 @@ VisualQualityEvalResult evaluateCameraSplit(
             ++valid_lpips_count;
         }
 
-        int frame_id = parseFrameIdFromImageName(camera->image_name_);
-        if (frame_id < 0) {
-            frame_id = static_cast<int>(camera_idx);
-        }
-
         result.records.push_back(
             FrameMetricRecord{
                 camera->image_name_,
-                frame_id,
-                static_cast<int>(camera_idx),
                 psnr,
                 ssim,
                 lpips,
+                blind_ratio,
+                blind_psnr,
+                blind_alpha_coverage,
             });
 
         psnr_sum += psnr;
@@ -327,12 +428,18 @@ VisualQualityEvalResult evaluateCameraSplit(
             torch::cuda::synchronize();
             saveTensorImageAsBgr(rendered_image, render_dir_path + "/" + camera->image_name_);
             saveTensorImageAsBgr(gt_image, gt_dir_path + "/" + camera->image_name_);
+            if (blind_mask.defined()) {
+                saveSingleChannelImage(blind_mask, blind_mask_dir_path + "/" + camera->image_name_);
+                saveSingleChannelImage(render_pkg.rendered_alpha.squeeze(), alpha_dir_path + "/" + camera->image_name_);
+            }
         }
     }
 
     result.mean_psnr = computeMeanOrNaN(psnr_sum, result.records.size());
     result.mean_ssim = computeMeanOrNaN(ssim_sum, result.records.size());
     result.mean_lpips = computeMeanOrNaN(lpips_sum, valid_lpips_count);
+    result.mean_blind_psnr = computeMeanOrNaN(blind_psnr_sum, valid_blind_count);
+    result.mean_blind_alpha_coverage = computeMeanOrNaN(blind_alpha_coverage_sum, valid_blind_count);
     return result;
 }
 
@@ -376,6 +483,9 @@ void Dataset::addFrame(Frame& cur_frame)
     /// point
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
     pcl::fromROSMsg(*cur_frame.point_msg, *cloud);
+    const torch::Tensor lidar_blind_mask = buildLidarBlindMask(
+        *cloud, q_wc.toRotationMatrix(), t_wc, image_rgb.cols, image_rgb.rows,
+        fx_, fy_, cx_, cy_, blind_patch_size_);
     for (const auto& pt : cloud->points)
     {
         pointcloud_.emplace_back(Eigen::Vector3d(pt.x, pt.y, pt.z));
@@ -395,6 +505,7 @@ void Dataset::addFrame(Frame& cur_frame)
         std::shared_ptr<Camera> cam = std::make_shared<Camera>();
 
         cam->original_image_ = tensor_utils::cvMat2TorchTensor_Float32(image_rgb, torch::kCPU, true);
+        cam->lidar_blind_mask_ = lidar_blind_mask;
         
         // 设置相机名称，格式为train_0000.jpg
         std::stringstream ss;
@@ -420,6 +531,7 @@ void Dataset::addFrame(Frame& cur_frame)
         std::shared_ptr<Camera> cam = std::make_shared<Camera>();
 
         cam->original_image_ = tensor_utils::cvMat2TorchTensor_Float32(image_rgb, torch::kCPU);
+        cam->lidar_blind_mask_ = lidar_blind_mask;
 
         // 设置相机名称，格式为test_0000.jpg
         std::stringstream ss;
@@ -479,6 +591,9 @@ GaussianModel::GaussianModel(const Params& prm)
     spnet_patch_size_ = prm.spnet_patch_size;
     spnet_dilate_radius_ = prm.spnet_dilate_radius;
     spnet_depth_grad_threshold_ = prm.spnet_depth_grad_threshold;
+    enable_spnet_ = prm.enable_spnet;
+    enable_ablation_logging_ = prm.enable_ablation_logging;
+    experiment_seed_ = prm.experiment_seed;
     // spnet_use_depth_normal_rotation_init_ = prm.spnet_use_depth_normal_rotation_init;
     spnet_enforce_normal_face_camera_ = prm.spnet_enforce_normal_face_camera;//da3 法线是否朝向相机
     // spnet_fallback_view_ray_when_invalid_ = prm.spnet_fallback_view_ray_when_invalid;
@@ -1023,16 +1138,21 @@ void GaussianModel::initialize(const std::shared_ptr<Dataset>& dataset,
     // 当前关键帧 RGB（SPNet 与 DA3 共用同一帧输入）
     torch::Tensor rgb = init_cam->original_image_.cuda();  // (3, H, W)
 
-    // 执行 get_spnet_points（仅负责补点，不再负责法线）
-    if (spnet != nullptr && spnet->is_loaded()) {
-        // 调用统一处理逻辑
-        sp_result = get_spnet_points(*spnet, rgb, sparse_depth, params, init_cam);
-        
-        std::cout << "\033[1;32m [SPNet] Generated " << sp_result.fused_points.size(0) 
-                  << " points (including LiDAR & Supplement)\033[0m" << std::endl;
-    } else {
-        std::cerr << "[GaussianModel] SPNet not loaded, initialization might be incomplete." << std::endl;
-        return; 
+    // SPNet 关闭时仍由同一函数生成纯 LiDAR 候选。
+    if (enable_ablation_logging_ && spnet) torch::cuda::synchronize();
+    const auto spnet_start = std::chrono::steady_clock::now();
+    sp_result = get_spnet_points(spnet.get(), rgb, sparse_depth, params, init_cam);
+    if (enable_ablation_logging_ && spnet) {
+        torch::cuda::synchronize();
+        spnet_time_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - spnet_start).count();
+        ++spnet_calls_;
+    }
+    if (!sp_result.success) {
+        if (enable_ablation_logging_) {
+            throw std::runtime_error("Candidate generation failed during SPNet ablation initialization");
+        }
+        std::cerr << "[GaussianModel] Candidate generation failed during initialization." << std::endl;
+        return;
     }
     
     // === Phase 4: 初始化 Gaussian 模型属性 ===
@@ -1225,12 +1345,18 @@ void GaussianModel::initialize(const std::shared_ptr<Dataset>& dataset,
     int64_t* scene_ids_ptr = scene_ids.data_ptr<int64_t>();
     init_cam->added_ids_.assign(scene_ids_ptr, scene_ids_ptr + scene_ids.size(0));
     
-    int num_supplement = std::max<int>(0, scene_ids.size(0) - num_lidar);
+    const int64_t num_supplement = sp_result.source_is_spnet.sum().item<int64_t>();
+    const int64_t num_projected_lidar = total_num - num_supplement;
+
+    if (enable_ablation_logging_) {
+        appendCandidateFlow(result_path_, init_cam->image_name_, num_projected_lidar,
+                            num_supplement, num_supplement, total_num);
+    }
 
     std::cout << std::fixed << std::setprecision(2) 
             << "\033[1;37m Init Map with " 
             << double(fused_point_cloud.size(0)) / 10000 << "w GS" 
-            << " (LiDAR: " << num_lidar << ", SPNet: " << num_supplement << ")"
+            << " (LiDAR: " << num_projected_lidar << ", SPNet: " << num_supplement << ")"
             << ",\033[0m";
 
     dataset->pointcloud_.clear();
@@ -2213,16 +2339,23 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
 
     SPNetPointsResult sp_result;
     
-    if (spnet != nullptr && spnet->is_loaded()) {
-        // 调用统一 SPNet 逻辑
-        sp_result = get_spnet_points(*spnet, rgb, sparse_depth, params, viewpoint_cam);
-        
-        if (sp_result.fused_points.size(0) == 0) {
-            return;
+    if (pc->enable_ablation_logging_ && spnet) torch::cuda::synchronize();
+    const auto spnet_start = std::chrono::steady_clock::now();
+    sp_result = get_spnet_points(spnet.get(), rgb, sparse_depth, params, viewpoint_cam);
+    if (pc->enable_ablation_logging_ && spnet) {
+        torch::cuda::synchronize();
+        pc->spnet_time_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - spnet_start).count();
+        ++pc->spnet_calls_;
+    }
+    if (!sp_result.success) {
+        if (pc->enable_ablation_logging_) {
+            throw std::runtime_error("Candidate generation failed during SPNet ablation extension");
         }
-    } else {
-        std::cerr << "SPNet not loaded, cannot generate new points." << std::endl;
-        return; // SPNet 不可用则直接返回
+        std::cerr << "[GaussianModel] Candidate generation failed during extension." << std::endl;
+        return;
+    }
+    if (sp_result.fused_points.size(0) == 0) {
+        return;
     }
 
     // === Phase 3.1: DA3 稠密法线引导（仅用于 normal/mask，不改变 SPNet 补点） ===
@@ -2364,6 +2497,9 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
         && pc->gaussian_regressor_ && pc->gaussian_regressor_->is_loaded();
 
     int num_regress_new = regress_mask.sum().item<int>();
+    const int64_t spnet_proposed = sp_result.source_is_spnet.sum().item<int64_t>();
+    const int64_t lidar_candidates = sp_result.source_is_spnet.numel() - spnet_proposed;
+    const int64_t spnet_selected = sp_result.source_is_spnet.index({regress_mask}).sum().item<int64_t>();
 
     // 额外传统补点只服务于在线回归实验，不改变当前主分支的 regress_mask 语义。
     bool enable_traditional_extra = use_regress && pc->enable_regress_high_grad_traditional_init_;
@@ -2407,7 +2543,13 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
     }
 
     int total_num = num_regress_new + traditional_extra_num;
-    if (total_num == 0) return;
+    if (total_num == 0) {
+        if (pc->enable_ablation_logging_) {
+            appendCandidateFlow(pc->result_path_, viewpoint_cam->image_name_, lidar_candidates,
+                                spnet_proposed, 0, 0);
+        }
+        return;
+    }
 
     // 提取主分支的候选点（回归分支或 baseline 分支都会使用这批点）。
     auto new_points = sp_result.fused_points.index({regress_mask}); // (M, 3)
@@ -2688,6 +2830,10 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
         dataset->pointdepth_.clear();
 
         std::cout << "[InsertSummary] regress=0, traditional_extra=0, total=0 (all regressed candidates were pruned)." << std::endl;
+        if (pc->enable_ablation_logging_) {
+            appendCandidateFlow(pc->result_path_, viewpoint_cam->image_name_, lidar_candidates,
+                                spnet_proposed, 0, 0);
+        }
         return;
     }
 
@@ -2703,6 +2849,11 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
 
     // 将新的高斯点添加到模型中，并更新优化器状态
     pc->densificationPostfix(fused_point_cloud, features_dc, features_rest, opacities, scales, rots, new_ids);
+
+    if (pc->enable_ablation_logging_) {
+        appendCandidateFlow(pc->result_path_, viewpoint_cam->image_name_, lidar_candidates,
+                            spnet_proposed, spnet_selected, total_inserted);
+    }
 
     // 输出新增高斯点数量信息
     std::cout << "[InsertSummary] regress=" << main_fused_point_cloud.size(0)
@@ -2760,7 +2911,10 @@ double optimize(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<Gaussia
         pc->keyframe_train_times_.resize(total_camera_num, 0);
     }
     std::random_device rd;
-    std::mt19937 gen(rd());
+    const uint32_t optimize_seed = pc->experiment_seed_ >= 0
+        ? static_cast<uint32_t>(pc->experiment_seed_) + static_cast<uint32_t>(pc->optimize_round_ * 2654435761U)
+        : rd();
+    std::mt19937 gen(optimize_seed);
     std::uniform_real_distribution<double> uni01(0.0, 1.0);
 
     // 首次扩容时初始化“致密化历史状态”
@@ -3333,6 +3487,14 @@ void evaluateVisualQuality(const std::shared_ptr<Dataset>& dataset,
     if (fs::exists(gt_dir_path)) fs::remove_all(gt_dir_path);
     fs::create_directories(gt_dir_path);
 
+    std::string blind_mask_dir_path = result_path + "/blind_mask";
+    if (fs::exists(blind_mask_dir_path)) fs::remove_all(blind_mask_dir_path);
+    fs::create_directories(blind_mask_dir_path);
+
+    std::string alpha_dir_path = result_path + "/alpha";
+    if (fs::exists(alpha_dir_path)) fs::remove_all(alpha_dir_path);
+    fs::create_directories(alpha_dir_path);
+
     const fs::path visual_quality_root = fs::path(result_path) / "visual_quality";
     const fs::path train_metrics_csv_path = visual_quality_root / "train" / "frame_metrics.csv";
     const fs::path test_metrics_csv_path = visual_quality_root / "test" / "frame_metrics.csv";
@@ -3358,7 +3520,9 @@ void evaluateVisualQuality(const std::shared_ptr<Dataset>& dataset,
             lpips_module,
             save_image,
             render_dir_path,
-            gt_dir_path);
+            gt_dir_path,
+            blind_mask_dir_path,
+            alpha_dir_path);
         savePerFrameMetricsCsv(train_metrics_csv_path, train_eval.records);
 
         // 输出训练视图的评估结果
@@ -3377,13 +3541,18 @@ void evaluateVisualQuality(const std::shared_ptr<Dataset>& dataset,
             lpips_module,
             save_image,
             render_dir_path,
-            gt_dir_path);
+            gt_dir_path,
+            blind_mask_dir_path,
+            alpha_dir_path);
         savePerFrameMetricsCsv(test_metrics_csv_path, test_eval.records);
 
         // 输出测试视图的评估结果（Novel View Synthesis性能）
         std::cout << std::fixed << std::setprecision(2) << "AUTO_TUNE_NOVEL_PSNR " << test_eval.mean_psnr << std::endl;
         std::cout << std::fixed << std::setprecision(3) << "AUTO_TUNE_NOVEL_SSIM " << test_eval.mean_ssim << std::endl;
         std::cout << std::fixed << std::setprecision(3) << "AUTO_TUNE_NOVEL_LPIPS " << test_eval.mean_lpips << std::endl;
+        std::cout << std::fixed << std::setprecision(2) << "ABLATION_NOVEL_BLIND_PSNR " << test_eval.mean_blind_psnr << std::endl;
+        std::cout << std::fixed << std::setprecision(4) << "ABLATION_NOVEL_BLIND_ALPHA_COVERAGE "
+                  << test_eval.mean_blind_alpha_coverage << std::endl;
         std::cout << "[Eval] Test 逐帧指标已保存到 " << test_metrics_csv_path << std::endl;
     }
 

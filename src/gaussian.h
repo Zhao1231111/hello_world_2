@@ -62,6 +62,7 @@ public:
       : width_(prm.width), height_(prm.height),
         fx_(prm.fx), fy_(prm.fy), cx_(prm.cx), cy_(prm.cy),
         select_every_k_frame_(prm.select_every_k_frame),
+        blind_patch_size_(prm.spnet_patch_size),
         pose_init_cov_(prm.pose_init_cov), has_logged_image_size_(false),
         all_frame_num_(0), is_keyframe_current_(false) {}
         
@@ -77,6 +78,7 @@ public:
 
     //选择每k帧作为关键帧
     int select_every_k_frame_;
+    int blind_patch_size_;
     double pose_init_cov_;
     bool has_logged_image_size_;
 
@@ -208,6 +210,9 @@ public:
     int spnet_patch_size_;                     // patch采样大小
     int spnet_dilate_radius_;                  // LiDAR mask膨胀半径
     float spnet_depth_grad_threshold_;         // 深度梯度过滤阈值
+    bool enable_spnet_ = true;
+    bool enable_ablation_logging_ = false;
+    int experiment_seed_ = -1;
     bool spnet_use_depth_normal_rotation_init_;// 是否启用深度法线驱动旋转初始化
     bool spnet_enforce_normal_face_camera_;    // 法线是否强制朝向相机
     bool spnet_fallback_view_ray_when_invalid_;// 无效像素时是否回退视线法线
@@ -287,6 +292,8 @@ public:
     double t_step_;
     double t_optlist_;
     double t_tocuda_;
+    double spnet_time_ = 0.0;
+    int64_t spnet_calls_ = 0;
     std::string da3_debug_dir_;
 
     std::string dataset_path_;
