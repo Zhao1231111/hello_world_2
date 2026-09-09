@@ -20,26 +20,26 @@ COCO_CONFIG_OVERRIDE="${COCO_CONFIG_OVERRIDE:-}"
 GAUSSIAN_LAUNCH_OVERRIDE="${GAUSSIAN_LAUNCH_OVERRIDE:-}"
 
 # 默认实验矩阵以及各序列对应的 bag、Gaussian-LIC 配置、launch 和 Coco-LIC 配置。
-declare -a SELECTED_SEQUENCES=(hku_campus_seq_00 degenerate_seq_00 tuhh_day_04)
+declare -a SELECTED_SEQUENCES=(hku_campus_seq_00 degenerate_seq_00 tuhh_day_02)
 declare -A BAG_PATHS=(
   [hku_campus_seq_00]="/root/autodl-tmp/dataset/hku_campus_seq_00.bag"
   [degenerate_seq_00]="/root/autodl-tmp/dataset/degenerate_seq_00.bag"
-  [tuhh_day_04]="/root/autodl-tmp/dataset/mcd/tuhh_day_04.bag"
+  [tuhh_day_02]="/root/autodl-tmp/dataset/mcd/tuhh_day_02.bag"
 )
 declare -A GAUSSIAN_CONFIGS=(
   [hku_campus_seq_00]="config/r3live.yaml"
   [degenerate_seq_00]="config/r3live.yaml"
-  [tuhh_day_04]="config/mcd.yaml"
+  [tuhh_day_02]="config/mcd.yaml"
 )
 declare -A GAUSSIAN_LAUNCHES=(
   [hku_campus_seq_00]="r3live.launch"
   [degenerate_seq_00]="r3live.launch"
-  [tuhh_day_04]="mcd.launch"
+  [tuhh_day_02]="mcd.launch"
 )
 declare -A COCO_CONFIGS=(
   [hku_campus_seq_00]="/config/ct_odometry_r3live.yaml"
   [degenerate_seq_00]="/config/ct_odometry_r3live.yaml"
-  [tuhh_day_04]="/config/ct_odometry_mcd.yaml"
+  [tuhh_day_02]="/config/ct_odometry_mcd.yaml"
 )
 
 usage() {

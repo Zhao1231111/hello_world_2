@@ -4,7 +4,7 @@
   <arg name="dataset_path" default = "" />
   <arg name="result_path" default = "" />
   <arg name="use_Gaussian_regress" default = "false" />
-  <arg name="enable_spnet" default = "true" />
+  <arg name="enable_spnet" default = "false" />
   <arg name="enable_ablation_logging" default = "false" />
   <arg name="experiment_seed" default = "-1" />
 

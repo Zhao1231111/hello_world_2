@@ -74,7 +74,7 @@ train_visual_eval_every_k_train_times: 4
 train_visual_eval_frame_ids: [4, 84, 64, 199, 239, 244, 249, 599, 604, 609, 784, 784, 794, 929, 964, 1234, 1264, 1589, 1624, 1784, 1799, 1814, 1839, 1854, 1874]
 train_visual_eval_output_dir: "train_visual_eval"
 
-extend_debug: true # 记录实时渲染图、alpha图、带有lidar选择的rgb图
+extend_debug: false # 记录实时渲染图、alpha图、带有lidar选择的rgb图
 
 scale_ratio_threshold: 100
 dark_color_threshold: 7
@@ -102,7 +102,7 @@ enable_normal_cull: false
 normal_z_cutoff: -0.001
 
 # === Backward Pose Optimization (IEKF) ===
-enable_pose_refinement: true
+enable_pose_refinement: false
 pose_max_iterations: 5
 pose_img_point_cov: 100.0
 pose_patch_size: 3  # 兼容旧版灰度 patch 位姿优化，当前 RGB 线性化实现未使用
