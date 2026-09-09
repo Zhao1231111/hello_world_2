@@ -83,7 +83,8 @@ __global__ void duplicateWithKeys(
 	const uint32_t* offsets,
 	uint64_t* gaussian_keys_unsorted,
 	uint32_t* gaussian_values_unsorted,
-	int* radii,
+	const int* radii,
+	const int2* bbox_extents,
 	dim3 grid)
 {
 	const uint32_t idx = static_cast<uint32_t>(cg::this_grid().thread_rank());
@@ -103,7 +104,7 @@ __global__ void duplicateWithKeys(
 	{
 		off = (idx == 0) ? 0 : offsets[idx - 1];
 		offset_to = offsets[idx];
-		getRect(points_xy[idx], radii[idx], rect_min, rect_max, grid);
+		getRect(points_xy[idx], bbox_extents[idx], rect_min, rect_max, grid);
 	}
 
 	const uint32_t rect_width = (rect_max.x - rect_min.x);
@@ -243,6 +244,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.clamped, P * 3, 128);
 	obtain(chunk, geom.internal_radii, P, 128);
 	obtain(chunk, geom.means2D, P, 128);
+	obtain(chunk, geom.bbox_extents, P, 128);
 	obtain(chunk, geom.transMat, P * 9, 128);
 	obtain(chunk, geom.normal_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
@@ -384,6 +386,7 @@ int CudaRasterizer::Rasterizer::forward(
 		tan_fovx, tan_fovy,
 		radii,
 		geomState.means2D,
+		geomState.bbox_extents,
 		geomState.depths,
 		geomState.transMat,
 		geomState.rgb,
@@ -413,6 +416,7 @@ int CudaRasterizer::Rasterizer::forward(
 		binningState.point_list_keys_unsorted,
 		binningState.point_list_unsorted,
 		radii,
+		geomState.bbox_extents,
 		tile_grid)
 	CHECK_CUDA(, debug)
 

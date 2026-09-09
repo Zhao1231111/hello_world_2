@@ -333,6 +333,28 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
     double total_adding_time = 0;
     double total_extending_time = 0;
 
+    // 像素内核会跳过 alpha < 1/255 的贡献，而 alpha <= Gaussian 自身 opacity。
+    // 因此低于该阈值的 Gaussian 已不可能产生渲染或训练梯度。这里独立使用通用 prune，
+    // 不调用、也不依赖已经废弃的 densifyAndPrune 路径。
+    constexpr float kDeadOpacityThreshold = 1.0f / 255.0f;
+    constexpr std::size_t kDeadOpacityPruneInterval = 10;
+    auto prune_dead_gaussians = [&gaussians]() -> int64_t {
+        torch::NoGradGuard no_grad;
+        const auto opacity = gaussians->getOpacity().squeeze(-1);
+        auto keep_mask = opacity >= kDeadOpacityThreshold;
+        const int64_t old_count = opacity.size(0);
+        const int64_t keep_count = keep_mask.sum().item<int64_t>();
+        const int64_t prune_count = old_count - keep_count;
+        if (prune_count > 0)
+        {
+            // prune 会同步裁剪可训练参数、稀疏 Adam 状态、全局 ID 与辅助统计张量。
+            gaussians->prune(keep_mask);
+            std::cout << "[OpacityPrune] removed=" << prune_count
+                      << ", remaining=" << keep_count << std::endl;
+        }
+        return prune_count;
+    };
+
     Frame cur_frame;
     while (!exit_flag)
     {
@@ -469,6 +491,13 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
         /// [5] optimize map
         t_start = std::chrono::steady_clock::now();
         double updated_num = optimize(dataset, gaussians);
+
+        // 批量裁剪而不是每帧重建全部参数和优化器状态，避免裁剪管理成本吞掉渲染收益。
+        // 每 10 个关键帧执行一次；循环结束后还会补做一次，确保保存和评估前没有死亡高斯。
+        if (dataset->train_cameras_.size() % kDeadOpacityPruneInterval == 0)
+        {
+            prune_dead_gaussians();
+        }
         torch::cuda::synchronize();
         t_end = std::chrono::steady_clock::now();
         total_mapping_time += std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
@@ -476,6 +505,13 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
                   << "\033[1;36m Update " << updated_num / 10000 
                   << "w GS per Iter \033[0m" << std::endl;
     }
+
+    // 收尾裁剪也计入 total_mapping_time，保证 E3 计时包含获得最终紧凑模型的完整成本。
+    t_start = std::chrono::steady_clock::now();
+    prune_dead_gaussians();
+    torch::cuda::synchronize();
+    t_end = std::chrono::steady_clock::now();
+    total_mapping_time += std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
 
     /// [6] evaluation
     std::cout << "Runtime Statistics"<<std::endl;

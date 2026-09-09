@@ -89,6 +89,25 @@ __forceinline__ __device__ void getRect(const float2 p, int max_radius, uint2& r
 }
 
 /**
+ * @brief 使用 x/y 独立半径计算 Tile 包围盒
+ *
+ * 2D surfel 投影通常具有明显方向性。继续使用 max(extent.x, extent.y) 构造方形包围盒
+ * 会把短轴方向上大量不可能贡献的 Tile 送入排序和像素阶段。这里仍然使用解析 AABB，
+ * 只是保留其两个轴各自的范围，因此不会引入基于采样的非保守剔除。
+ */
+__forceinline__ __device__ void getRect(const float2 p, const int2 extent, uint2& rect_min, uint2& rect_max, dim3 grid)
+{
+	rect_min = {
+		min(grid.x, max((int)0, (int)((p.x - extent.x) / BLOCK_X))),
+		min(grid.y, max((int)0, (int)((p.y - extent.y) / BLOCK_Y)))
+	};
+	rect_max = {
+		min(grid.x, max((int)0, (int)((p.x + extent.x + BLOCK_X - 1) / BLOCK_X))),
+		min(grid.y, max((int)0, (int)((p.y + extent.y + BLOCK_Y - 1) / BLOCK_Y)))
+	};
+}
+
+/**
  * @brief 使用 4x3 矩阵变换 3D 点
  */
 __forceinline__ __device__ float3 transformPoint4x3(const float3& p, const float* matrix)

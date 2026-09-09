@@ -326,7 +326,7 @@ renderCUDA(
 
 			const float G = exp(power);
 			const float alpha = min(0.99f, opa * G);
-			if (alpha < 1.0f / 255.0f)
+			if (alpha < ALPHA_THRESHOLD)
 				continue;
 
 			T = T / (1.f - alpha);

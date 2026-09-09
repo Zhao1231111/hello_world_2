@@ -207,6 +207,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float focal_x, const float focal_y,  // 焦距
 	int* radii,                    // [输出] 屏幕投影半径（像素）
 	float2* points_xy_image,       // [输出] 屏幕中心坐标
+	int2* bbox_extents,            // [输出] x/y 独立的像素包围盒半径
 	float* depths,                 // [输出] 相机坐标系下的深度
 	float* transMats,              // [输出] 计算出的变换矩阵 T
 	float* rgb,                    // [输出] 计算出的 RGB 颜色
@@ -222,6 +223,11 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// 初始化为 0，如果未通过裁剪，则后续不会处理此点
 	radii[idx] = 0;
 	tiles_touched[idx] = 0;
+
+	// 对任意像素都有 exp(power) <= 1，因此 Gaussian 自身 opacity 小于像素硬阈值时，
+	// alpha 必然也小于该阈值。此处直接退出可省去投影、AABB、分桶、排序和像素遍历。
+	if (opacities[idx] < ALPHA_THRESHOLD)
+		return;
 
 	// 1. 视锥体剔除：检查点是否在相机可见范围内
 	float3 p_view;
@@ -267,17 +273,24 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// 3. 计算 AABB：确定该高斯在屏幕上覆盖的矩形区域
 	float2 point_image;
 	float radius;
+	int2 bbox_extent;
 	{
 		float2 extent;
 		bool ok = compute_aabb(T, cutoff, point_image, extent);
 		if (!ok) return;
-		radius = ceil(max(max(extent.x, extent.y), cutoff * FilterSize));
+		// low-pass 项在两个方向上都有 cutoff * FilterSize 的支撑域，故分别取上界。
+		// scalar radius 仍保留给既有 visibility/backward 接口，Tile 分桶改用独立 extent。
+		bbox_extent = {
+			(int)ceil(max(extent.x, cutoff * FilterSize)),
+			(int)ceil(max(extent.y, cutoff * FilterSize))
+		};
+		radius = max(bbox_extent.x, bbox_extent.y);
 	}
 
 	// 4. 计算 AABB 覆盖的 Tile。这里仅做保守的包围盒分桶，不再执行实验性的
 	//    Ray-Splat tile 精确剔除，确保分桶范围与后续像素级 low-pass 计算一致。
 	uint2 rect_min, rect_max;
-	getRect(point_image, radius, rect_min, rect_max, grid);
+	getRect(point_image, bbox_extent, rect_min, rect_max, grid);
 	
 	// 基本 AABB 检查
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
@@ -295,6 +308,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	depths[idx] = p_view.z;
 	radii[idx] = (int)radius;
 	points_xy_image[idx] = point_image;
+	bbox_extents[idx] = bbox_extent;
 	normal_opacity[idx] = {normal.x, normal.y, normal.z, opacities[idx]};
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
@@ -424,7 +438,7 @@ renderCUDA(
 			if (power > 0.0f) continue;
 
 			float alpha = min(0.99f, opa * exp(power));
-			if (alpha < 1.0f / 255.0f) continue;
+			if (alpha < ALPHA_THRESHOLD) continue;
 			
 			// 检查透射率是否已饱和（早停优化）
 			float test_T = T * (1 - alpha);
@@ -535,6 +549,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float tan_fovx, const float tan_fovy,
 	int* radii,
 	float2* means2D,
+	int2* bbox_extents,
 	float* depths,
 	float* transMats,
 	float* rgb,
@@ -562,6 +577,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		focal_x, focal_y,
 		radii,
 		means2D,
+		bbox_extents,
 		depths,
 		transMats,
 		rgb,

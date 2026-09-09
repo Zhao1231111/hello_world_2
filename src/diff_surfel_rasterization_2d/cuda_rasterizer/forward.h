@@ -36,6 +36,7 @@ namespace FORWARD
 		const float tan_fovx, float tan_fovy,
 		int* radii,
 		float2* points_xy_image,
+		int2* bbox_extents,
 		float* depths,
 		// float* isovals,
 		// float3* normals,

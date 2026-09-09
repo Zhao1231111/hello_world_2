@@ -40,6 +40,7 @@ namespace CudaRasterizer
 		bool* clamped;            // 是否被裁剪标志
 		int* internal_radii;      // 内部计算的投影半径 (P)
 		float2* means2D;          // 投影后的 2D 中心位置 (P)
+		int2* bbox_extents;       // x/y 独立的像素包围盒半径 (P)，仅供 Tile 分桶使用
 		float* transMat;          // 2D 变换矩阵 (P, 9) - 2DGS 特有
 		float4* normal_opacity;   // 法线和不透明度 (P, 4)
 		float* rgb;               // 转换后的 RGB 颜色 (P, 3)
