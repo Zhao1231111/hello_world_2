@@ -371,7 +371,9 @@ VisualQualityEvalResult evaluateCameraSplit(
     for (size_t camera_idx = 0; camera_idx < cameras.size(); ++camera_idx) {
         const auto& camera = cameras[camera_idx];
 
-        auto render_pkg = render_2d(camera, pc, bg, 1.0f);
+        // 视觉评估需要 RGB 与 blind-region alpha coverage，不需要深度/法线几何输出。
+        auto render_pkg = render_2d(
+            camera, pc, bg, 1.0f, false, torch::Tensor(), RenderMode2D::RGB_ALPHA);
         auto rendered_image = render_pkg.rendered_image.clamp(0, 1);
         auto gt_image = camera->original_image_.to(torch::kCUDA).clamp(0, 1);
 
@@ -2440,7 +2442,9 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
     auto spatial_mask = torch::logical_or(grad_mask, voxel_mask);
 
     // === Phase 4: 渲染 & 过滤 ===
-    auto render_pkg = render_2d(viewpoint_cam, pc, bg, 1.0f);
+    // 补点决策只读取颜色误差与 alpha，使用紧凑 RGB+alpha kernel。
+    auto render_pkg = render_2d(
+        viewpoint_cam, pc, bg, 1.0f, false, torch::Tensor(), RenderMode2D::RGB_ALPHA);
     auto rendered_alpha = render_pkg.rendered_alpha.squeeze(); // (H, W)
 
     double alpha_threshold_base = pc->alpha_threshold_;
@@ -3124,7 +3128,15 @@ double optimize(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<Gaussia
 
         // 渲染当前视角的图像（使用 2DGS 渲染器）
         pc->t_start_ = std::chrono::steady_clock::now();
-        auto render_pkg = render_2d(viewpoint_cam, pc, bg, 1.0f);
+        // 仅当本次确实启用 distortion/normal 正则项时才生成完整几何缓冲区；
+        // 纯 photometric 迭代走 RGB-only 前向与反向 kernel。
+        const bool use_geometry_losses =
+            pc->keyframe_train_times_[idx] > pc->train_times_threshold_;
+        const auto render_mode = use_geometry_losses
+            ? RenderMode2D::FULL_GEOMETRY
+            : RenderMode2D::RGB_ONLY;
+        auto render_pkg = render_2d(
+            viewpoint_cam, pc, bg, 1.0f, false, torch::Tensor(), render_mode);
         auto rendered_image = render_pkg.rendered_image;  // 渲染结果图像
         torch::cuda::synchronize();
         pc->t_end_ = std::chrono::steady_clock::now();
@@ -3166,7 +3178,7 @@ double optimize(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<Gaussia
         auto loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - ssim_value);
 
         // === 2DGS 正则化项 ===
-        if (pc->keyframe_train_times_[idx] > pc->train_times_threshold_) {
+        if (use_geometry_losses) {
             // Distortion Loss
             auto dist_loss = pc->lambda_dist_ * loss_utils::distortion_loss(render_pkg.rendered_distortion);
             loss = loss + dist_loss;
@@ -3400,7 +3412,9 @@ void runTrainVisualEvalIfNeeded(const std::shared_ptr<Dataset>& dataset,
     const bool has_lpips = (lpips_module != nullptr);
 
     // 重新渲染一次，得到“这张图刚训练完之后”的真实效果。
-    auto render_pkg = render_2d(train_camera, pc, bg, 1.0f);
+    // 训练过程可视化只计算 RGB 指标，不需要任何辅助几何通道。
+    auto render_pkg = render_2d(
+        train_camera, pc, bg, 1.0f, false, torch::Tensor(), RenderMode2D::RGB_ONLY);
     auto rendered_image = render_pkg.rendered_image.clamp(0, 1);
     auto gt_image = train_camera->original_image_.to(torch::kCUDA).clamp(0, 1);
 

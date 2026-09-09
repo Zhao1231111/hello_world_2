@@ -6,6 +6,8 @@
  */
 
 #include "renderer_2d.h"
+#include <array>
+#include <mutex>
 #include "rasterizer_2d.h"
 #include "../camera.h"
 #include "../gaussian.h"
@@ -149,9 +151,18 @@ RenderResult2D render_2d(
     float scaling_modifier,
     bool debug_mode,
     const torch::Tensor& render_mask,
-    bool compute_extras
+    RenderMode2D render_mode
 )
 {
+	// 每种模式只记录首次命中，既能从实验日志确认调用分流，又不污染逐帧计时输出。
+	static std::array<std::once_flag, 3> render_mode_log_flags;
+	const auto mode_index = static_cast<std::size_t>(render_mode);
+	const char* mode_name = render_mode == RenderMode2D::RGB_ONLY ? "RGB_ONLY" :
+	                        render_mode == RenderMode2D::RGB_ALPHA ? "RGB_ALPHA" : "FULL_GEOMETRY";
+	std::call_once(render_mode_log_flags.at(mode_index), [mode_name]() {
+		std::cout << "[Rasterizer2D] dispatch mode=" << mode_name << std::endl;
+	});
+
     // === 计算相机视场角参数 ===
     const float tan_fovx = std::tan(viewpoint_camera->FoVx_ * 0.5f);
     const float tan_fovy = std::tan(viewpoint_camera->FoVy_ * 0.5f);
@@ -169,7 +180,8 @@ RenderResult2D render_2d(
         pc->sh_degree_,
         viewpoint_camera->camera_center_,
         false,  // prefiltered
-        debug_mode   // debug
+        debug_mode,  // debug
+        render_mode
     );
 
     // === 创建光栅化器实例 ===
@@ -333,7 +345,11 @@ RenderResult2D render_2d(
         result.screenspace_points.retain_grad();
     }
 
-    if (compute_extras) {
+    if (render_mode == RenderMode2D::RGB_ALPHA) {
+        // 紧凑模式只返回单通道 alpha，不再执行任何深度/法线后处理。
+        result.rendered_alpha = out_others.index({0, torch::indexing::Slice(), torch::indexing::Slice()});
+    }
+    else if (render_mode == RenderMode2D::FULL_GEOMETRY) {
         // === 从 out_others 中提取各个辅助输出 ===
         // 1. 期望深度 (Expected Depth)
         auto render_depth_expected = out_others.index({0, torch::indexing::Slice(), torch::indexing::Slice()});
@@ -442,8 +458,8 @@ PoseLinearization2D linearize_pose_2d(
             auto plus_camera = makePerturbedCamera(viewpoint_camera, plus_delta);
             auto minus_camera = makePerturbedCamera(viewpoint_camera, minus_delta);
 
-            auto render_plus = render_2d(plus_camera, pc, bg_color, 1.0f, false, torch::Tensor(), false);
-            auto render_minus = render_2d(minus_camera, pc, bg_color, 1.0f, false, torch::Tensor(), false);
+            auto render_plus = render_2d(plus_camera, pc, bg_color, 1.0f, false, torch::Tensor(), RenderMode2D::RGB_ONLY);
+            auto render_minus = render_2d(minus_camera, pc, bg_color, 1.0f, false, torch::Tensor(), RenderMode2D::RGB_ONLY);
 
             // [公式] J_k \approx (I(x+\epsilon e_k) - I(x-\epsilon e_k)) / (2\epsilon)
             jacobian_rgb = (render_plus.rendered_image - render_minus.rendered_image) / (2.0 * step);
@@ -451,7 +467,7 @@ PoseLinearization2D linearize_pose_2d(
         else
         {
             auto plus_camera = makePerturbedCamera(viewpoint_camera, plus_delta);
-            auto render_plus = render_2d(plus_camera, pc, bg_color, 1.0f, false, torch::Tensor(), false);
+            auto render_plus = render_2d(plus_camera, pc, bg_color, 1.0f, false, torch::Tensor(), RenderMode2D::RGB_ONLY);
 
             // [公式] J_k \approx (I(x+\epsilon e_k) - I(x)) / \epsilon
             jacobian_rgb = (render_plus.rendered_image - base_render.rendered_image) / step;

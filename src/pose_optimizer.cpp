@@ -217,7 +217,7 @@ PoseFilterResult refineCurrentFramePose(
             1.0f,
             false,
             torch::Tensor(),
-            true);
+            RenderMode2D::RGB_ALPHA);
 
         return linearize_pose_2d(
             camera,

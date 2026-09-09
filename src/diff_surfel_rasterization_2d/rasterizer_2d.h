@@ -11,6 +11,7 @@
 #include <torch/torch.h>
 
 #include "rasterize_points.h"
+#include "render_mode_2d.h"
 
 /**
  * @brief 2D高斯光栅化设置参数结构体
@@ -32,13 +33,14 @@ struct GaussianRasterization2DSettings
         int sh_degree,
         torch::Tensor& campos,
         bool prefiltered,
-        bool debug)
+        bool debug,
+        RenderMode2D render_mode)
         : image_height_(image_height), image_width_(image_width), 
           tanfovx_(tanfovx), tanfovy_(tanfovy),
           bg_(bg), scale_modifier_(scale_modifier), 
           viewmatrix_(viewmatrix), projmatrix_(projmatrix),
           sh_degree_(sh_degree), campos_(campos), 
-          prefiltered_(prefiltered), debug_(debug)
+          prefiltered_(prefiltered), debug_(debug), render_mode_(render_mode)
     {}
 
     int image_height_;
@@ -53,6 +55,7 @@ struct GaussianRasterization2DSettings
     torch::Tensor campos_;
     bool prefiltered_;
     bool debug_;
+    RenderMode2D render_mode_;
 };
 
 /**

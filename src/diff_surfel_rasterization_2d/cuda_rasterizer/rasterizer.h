@@ -14,6 +14,7 @@
 
 #include <vector>
 #include <functional>
+#include "../render_mode_2d.h"
 
 namespace CudaRasterizer
 {
@@ -51,7 +52,8 @@ namespace CudaRasterizer
 			float* out_color,
 			float* out_others,
 			int* radii = nullptr,
-			bool debug = false);
+			bool debug = false,
+			RenderMode2D render_mode = RenderMode2D::FULL_GEOMETRY);
 
 		static void backward(
 			const int P, int D, int M, int R,
@@ -83,7 +85,8 @@ namespace CudaRasterizer
 			float* dL_dsh,
 			float* dL_dscale,
 			float* dL_drot,
-			bool debug);
+			bool debug,
+			RenderMode2D render_mode);
 	};
 };
 

@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <tuple>
 #include <string>
+#include "render_mode_2d.h"
 	
 /**
  * @brief CUDA 高斯光栅化前向传播函数
@@ -70,7 +71,8 @@ RasterizeGaussiansCUDA(
 	const int degree,
 	const torch::Tensor& campos,
 	const bool prefiltered,
-	const bool debug);
+	const bool debug,
+	const RenderMode2D render_mode);
 
 /**
  * @brief CUDA 高斯光栅化反向传播函数
@@ -135,7 +137,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const int R,
 	const torch::Tensor& binningBuffer,
 	const torch::Tensor& imageBuffer,
-	const bool debug);
+	const bool debug,
+	const RenderMode2D render_mode);
 		
 /**
  * @brief Adam optimizer update step (CUDA)

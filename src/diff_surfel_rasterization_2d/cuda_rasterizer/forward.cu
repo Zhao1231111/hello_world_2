@@ -321,7 +321,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
  * 2. 线程独立计算各自像素的 Alpha 混合与颜色合成。
  * 3. 支持输出深度图、法线图、畸变图等辅助信息。
  */
-template <uint32_t CHANNELS>
+template <uint32_t CHANNELS, RenderMode2D MODE>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,            // 每个 Tile 覆盖的高斯点范围线
@@ -371,8 +371,7 @@ renderCUDA(
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 }; // 累积颜色
 
-#if RENDER_AXUTILITY
-	// 初始化辅助渲染输出
+	// 这些局部量只在 FULL_GEOMETRY 实例中使用；编译期分支会从另外两个 kernel 中消除。
 	float N[3] = {0}; // 累积法线
 	float D = { 0 }; // 深度
 	float M1 = {0}; // 畸变计算中间量
@@ -380,7 +379,6 @@ renderCUDA(
 	float distortion = {0}; // 畸变图
 	float median_depth = {0}; // 中值深度
 	float median_contributor = {-1};
-#endif
 
 	// 2. 遍历高斯点：分块加载并计算
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -450,22 +448,23 @@ renderCUDA(
 
 			// 6. 累积颜色和其他属性 (Alpha Blending)
 			float w = alpha * T;
-#if RENDER_AXUTILITY
-			// 按照 2DGS 论文计算畸变、深度、法向输出
-			float A = 1-T;
-			float m = far_n / (far_n - near_n) * (1 - near_n / depth);
-			distortion += (m * m * A + M2 - 2 * m * M1) * w;
-			D  += depth * w;
-			M1 += m * w;
-			M2 += m * m * w;
+			if constexpr (MODE == RenderMode2D::FULL_GEOMETRY)
+			{
+				// 只有 full kernel 才计算深度、法线、中值深度和 distortion 的递推量。
+				float A = 1-T;
+				float m = far_n / (far_n - near_n) * (1 - near_n / depth);
+				distortion += (m * m * A + M2 - 2 * m * M1) * w;
+				D  += depth * w;
+				M1 += m * w;
+				M2 += m * m * w;
 
-			if (T > 0.5) {
-				median_depth = depth;
-				median_contributor = contributor;
+				if (T > 0.5) {
+					median_depth = depth;
+					median_contributor = contributor;
+				}
+				float normal[3] = {nor_o.x, nor_o.y, nor_o.z};
+				for (int ch=0; ch<3; ch++) N[ch] += normal[ch] * w;
 			}
-			float normal[3] = {nor_o.x, nor_o.y, nor_o.z};
-			for (int ch=0; ch<3; ch++) N[ch] += normal[ch] * w;
-#endif
 
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * w;
@@ -483,17 +482,23 @@ renderCUDA(
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 
-#if RENDER_AXUTILITY
-		// 写入 2DGS 特有的辅助 Map
-		n_contrib[pix_id + H * W] = median_contributor;
-		final_T[pix_id + H * W] = M1;
-		final_T[pix_id + 2 * H * W] = M2;
-		out_others[pix_id + DEPTH_OFFSET * H * W] = D;
-		out_others[pix_id + ALPHA_OFFSET * H * W] = 1 - T;
-		for (int ch=0; ch<3; ch++) out_others[pix_id + (NORMAL_OFFSET+ch) * H * W] = N[ch];
-		out_others[pix_id + MIDDEPTH_OFFSET * H * W] = median_depth;
-		out_others[pix_id + DISTORTION_OFFSET * H * W] = distortion;
-#endif
+		if constexpr (MODE == RenderMode2D::RGB_ALPHA)
+		{
+			// 紧凑模式的 out_others 只有一个通道，alpha 固定放在通道 0。
+			out_others[pix_id] = 1 - T;
+		}
+		else if constexpr (MODE == RenderMode2D::FULL_GEOMETRY)
+		{
+			// full 模式维持既有 7 通道布局，保证几何损失及其 backward 数值不变。
+			n_contrib[pix_id + H * W] = median_contributor;
+			final_T[pix_id + H * W] = M1;
+			final_T[pix_id + 2 * H * W] = M2;
+			out_others[pix_id + DEPTH_OFFSET * H * W] = D;
+			out_others[pix_id + ALPHA_OFFSET * H * W] = 1 - T;
+			for (int ch=0; ch<3; ch++) out_others[pix_id + (NORMAL_OFFSET+ch) * H * W] = N[ch];
+			out_others[pix_id + MIDDEPTH_OFFSET * H * W] = median_depth;
+			out_others[pix_id + DISTORTION_OFFSET * H * W] = distortion;
+		}
 	}
 }
 
@@ -512,23 +517,28 @@ void FORWARD::render(
 	uint32_t* n_contrib,
 	const float* bg_color,
 	float* out_color,
-	float* out_others)
+	float* out_others,
+	RenderMode2D render_mode)
 {
-	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
-		ranges,
-		point_list,
-		W, H,
-		focal_x, focal_y,
-		means2D,
-		colors,
-		transMats,
-		depths,
-		normal_opacity,
-		final_T,
-		n_contrib,
-		bg_color,
-		out_color,
-		out_others);
+	// 显式 switch 产生三个独立的模板实例，避免在每个像素/高斯内执行运行时 mode 分支。
+	#define LAUNCH_RENDER_2D(MODE_VALUE) \
+		renderCUDA<NUM_CHANNELS, MODE_VALUE> << <grid, block >> > ( \
+			ranges, point_list, W, H, focal_x, focal_y, means2D, colors, transMats, depths, \
+			normal_opacity, final_T, n_contrib, bg_color, out_color, out_others)
+
+	switch (render_mode)
+	{
+		case RenderMode2D::RGB_ONLY:
+			LAUNCH_RENDER_2D(RenderMode2D::RGB_ONLY);
+			break;
+		case RenderMode2D::RGB_ALPHA:
+			LAUNCH_RENDER_2D(RenderMode2D::RGB_ALPHA);
+			break;
+		case RenderMode2D::FULL_GEOMETRY:
+			LAUNCH_RENDER_2D(RenderMode2D::FULL_GEOMETRY);
+			break;
+	}
+	#undef LAUNCH_RENDER_2D
 }
 
 void FORWARD::preprocess(int P, int D, int M,

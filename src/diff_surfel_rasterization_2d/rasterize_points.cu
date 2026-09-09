@@ -114,7 +114,8 @@ RasterizeGaussiansCUDA(
 	const int degree,
 	const torch::Tensor& campos,
 	const bool prefiltered,
-	const bool debug)
+	const bool debug,
+	const RenderMode2D render_mode)
 {
   // === 输入验证 ===
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
@@ -144,8 +145,9 @@ RasterizeGaussiansCUDA(
   auto float_opts = means3D.options().dtype(torch::kFloat32);
 
   torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
-  // out_others: [depth(1), alpha(1), normal(3), median_depth(1), distortion(1)] = 7 channels
-  torch::Tensor out_others = torch::full({3+3+1, H, W}, 0.0, float_opts);
+  // RGB-only 不分配辅助图；RGB+alpha 使用紧凑单通道；full geometry 保持原来的 7 通道布局。
+  torch::Tensor out_others = torch::full(
+      {renderAuxChannelCount2D(render_mode), H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
   
   // === 创建动态调整大小的缓冲区 ===
@@ -196,7 +198,8 @@ RasterizeGaussiansCUDA(
 		out_color.contiguous().data_ptr<float>(),
 		out_others.contiguous().data_ptr<float>(),
 		radii.contiguous().data_ptr<int>(),
-		debug);
+		debug,
+		render_mode);
   }
   
   return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer);
@@ -225,7 +228,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const int R,
 	const torch::Tensor& binningBuffer,
 	const torch::Tensor& imageBuffer,
-	const bool debug) 
+	const bool debug,
+	const RenderMode2D render_mode)
 {
 
   CHECK_INPUT(background);
@@ -295,7 +299,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  dL_dsh.contiguous().data_ptr<float>(),
 	  dL_dscales.contiguous().data_ptr<float>(),
 	  dL_drotations.contiguous().data_ptr<float>(),
-	  debug);
+	  debug,
+	  render_mode);
   }
 
   return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dtransMat, dL_dsh, dL_dscales, dL_drotations, dL_dnormal);

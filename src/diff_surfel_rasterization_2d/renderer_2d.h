@@ -11,6 +11,7 @@
 #include <tuple>
 #include <memory>
 #include <torch/torch.h>
+#include "render_mode_2d.h"
 
 // Forward declarations
 class Camera;
@@ -108,7 +109,7 @@ RenderResult2D render_2d(
     float scaling_modifier = 1.0f,
     bool debug_mode = false,
     const torch::Tensor& render_mask = torch::Tensor(),
-    bool compute_extras = true
+    RenderMode2D render_mode = RenderMode2D::FULL_GEOMETRY
 );
 
 /**

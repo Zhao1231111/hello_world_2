@@ -11,6 +11,7 @@
 #include "device_launch_parameters.h"
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
+#include "../render_mode_2d.h"
 
 namespace BACKWARD
 {
@@ -37,7 +38,8 @@ namespace BACKWARD
 		float3* dL_dmean2D,
 		float* dL_dnormal3D,
 		float* dL_dopacity,
-		float* dL_dcolors);
+		float* dL_dcolors,
+		RenderMode2D render_mode);
 
 	/**
 	 * @brief 预处理阶段的反向传播：将梯度传播回原始 3D 参数（位置、旋转、缩放、SH）

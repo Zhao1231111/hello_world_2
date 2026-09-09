@@ -12,6 +12,7 @@
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
 #include "auxiliary.h"
+#include "../render_mode_2d.h"
 
 namespace FORWARD
 {
@@ -65,7 +66,8 @@ namespace FORWARD
 		uint32_t* n_contrib,
 		const float* bg_color,
 		float* out_color,
-		float* out_others);
+		float* out_others,
+		RenderMode2D render_mode);
 }
 
 #endif

@@ -62,7 +62,8 @@ GaussianRasterizer2DFunction::forward(
         raster_settings.sh_degree_,
         raster_settings.campos_,
         raster_settings.prefiltered_,
-        raster_settings.debug_
+        raster_settings.debug_,
+        raster_settings.render_mode_
     );
 
     // === 解析渲染结果与缓冲区 ===
@@ -84,6 +85,7 @@ GaussianRasterizer2DFunction::forward(
     ctx->saved_data["sh_degree"] = raster_settings.sh_degree_;
     ctx->saved_data["image_height"] = raster_settings.image_height_;
     ctx->saved_data["image_width"] = raster_settings.image_width_;
+    ctx->saved_data["render_mode"] = static_cast<std::int64_t>(raster_settings.render_mode_);
 
     // 保存张量：注意这些张量在反向传播时会被恢复
     ctx->save_for_backward({
@@ -129,6 +131,7 @@ GaussianRasterizer2DFunction::backward(
     auto sh_degree = ctx->saved_data["sh_degree"].toInt();
     auto image_height = ctx->saved_data["image_height"].toInt();
     auto image_width = ctx->saved_data["image_width"].toInt();
+    auto render_mode = static_cast<RenderMode2D>(ctx->saved_data["render_mode"].toInt());
 
     // === 恢复前向传播保存的张量 ===
     auto saved = ctx->get_saved_variables();
@@ -151,9 +154,6 @@ GaussianRasterizer2DFunction::backward(
     auto dL_dcolor = grad_outputs[0];      // (3, H, W)
     auto dL_dout_others = grad_outputs[1]; // (7, H, W) - 包含深度梯度等
     
-    // 从 out_others 梯度中提取深度梯度 (第0个通道)
-    auto dL_ddepths = dL_dout_others.index({0, torch::indexing::Slice(), torch::indexing::Slice()});
-
     // === 调用底层 CUDA 反向传播算子 ===
     auto rasterization_backward_result = RasterizeGaussiansBackwardCUDA(
         bg,
@@ -177,7 +177,8 @@ GaussianRasterizer2DFunction::backward(
         num_rendered,
         binningBuffer,
         imgBuffer,
-        false  // debug
+        false,  // debug
+        render_mode
     );
 
     // === 解析反向传播结果 ===

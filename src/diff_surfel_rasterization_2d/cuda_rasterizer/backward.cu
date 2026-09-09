@@ -153,7 +153,7 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
  * 使用反向 Alpha 混合：从最后一个贡献的高斯点开始，向前遍历。
  * 执行链式法则，计算损失对颜色、不透明度、2D/3D 变换矩阵、法向的偏导。
  */
-template <uint32_t C>
+template <uint32_t C, RenderMode2D MODE>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,             // 每个 Tile 覆盖的高斯点范围线
@@ -215,24 +215,30 @@ renderCUDA(
 	float accum_rec[C] = { 0 };
 	float dL_dpixel[C];
 
-#if RENDER_AXUTILITY
-	float dL_dreg;
-	float dL_ddepth;
-	float dL_daccum;
-	float dL_dnormal2D[3];
-	const int median_contributor = inside ? n_contrib[pix_id + H * W] : 0;
-	float dL_dmedian_depth;
-	float dL_dmax_dweight;
+	// 非 full 模式中的无用局部量会被模板实例化阶段消除，不占用对应 kernel 的寄存器。
+	float dL_dreg = 0.0f;
+	float dL_ddepth = 0.0f;
+	float dL_daccum = 0.0f;
+	float dL_dnormal2D[3] = {0.0f, 0.0f, 0.0f};
+	const int median_contributor =
+		(MODE == RenderMode2D::FULL_GEOMETRY && inside) ? n_contrib[pix_id + H * W] : 0;
+	float dL_dmedian_depth = 0.0f;
 
-	if (inside) {
-		dL_ddepth = dL_depths[DEPTH_OFFSET * H * W + pix_id];
-		dL_daccum = dL_depths[ALPHA_OFFSET * H * W + pix_id];
-		dL_dreg = dL_depths[DISTORTION_OFFSET * H * W + pix_id];
-		for (int i = 0; i < 3; i++) 
-			dL_dnormal2D[i] = dL_depths[(NORMAL_OFFSET + i) * H * W + pix_id];
-
-		dL_dmedian_depth = dL_depths[MIDDEPTH_OFFSET * H * W + pix_id];
-		// dL_dmax_dweight = dL_depths[MEDIAN_WEIGHT_OFFSET * H * W + pix_id];
+	if constexpr (MODE == RenderMode2D::RGB_ALPHA)
+	{
+		// RGB+alpha 的紧凑辅助缓冲区仅有 alpha，位于通道 0。
+		if (inside) dL_daccum = dL_depths[pix_id];
+	}
+	else if constexpr (MODE == RenderMode2D::FULL_GEOMETRY)
+	{
+		if (inside) {
+			dL_ddepth = dL_depths[DEPTH_OFFSET * H * W + pix_id];
+			dL_daccum = dL_depths[ALPHA_OFFSET * H * W + pix_id];
+			dL_dreg = dL_depths[DISTORTION_OFFSET * H * W + pix_id];
+			for (int i = 0; i < 3; i++)
+				dL_dnormal2D[i] = dL_depths[(NORMAL_OFFSET + i) * H * W + pix_id];
+			dL_dmedian_depth = dL_depths[MIDDEPTH_OFFSET * H * W + pix_id];
+		}
 	}
 
 	// for compute gradient with respect to depth and normal
@@ -242,11 +248,10 @@ renderCUDA(
 	float accum_alpha_rec = 0;
 	float accum_normal_rec[3] = {0};
 	// for compute gradient with respect to the distortion map
-	const float final_D = inside ? final_Ts[pix_id + H * W] : 0;
-	const float final_D2 = inside ? final_Ts[pix_id + 2 * H * W] : 0;
+	const float final_D = (MODE == RenderMode2D::FULL_GEOMETRY && inside) ? final_Ts[pix_id + H * W] : 0;
+	const float final_D2 = (MODE == RenderMode2D::FULL_GEOMETRY && inside) ? final_Ts[pix_id + 2 * H * W] : 0;
 	const float final_A = 1 - T_final;
 	float last_dL_dT = 0;
-#endif
 
 	if (inside){
 		for (int i = 0; i < C; i++)
@@ -353,43 +358,38 @@ renderCUDA(
 			}
 
 			float dL_dz = 0.0f;
-			float dL_dweight = 0;
-#if RENDER_AXUTILITY
-			const float m_d = far_n / (far_n - near_n) * (1 - near_n / c_d);
-			const float dmd_dd = (far_n * near_n) / ((far_n - near_n) * c_d * c_d);
-			if (contributor == median_contributor-1) {
-				dL_dz += dL_dmedian_depth;
-				// dL_dweight += dL_dmax_dweight;
+			if constexpr (MODE == RenderMode2D::RGB_ALPHA || MODE == RenderMode2D::FULL_GEOMETRY)
+			{
+				// alpha 输出对 opacity 和几何参数的梯度；RGB-only 实例完全删除这段递推。
+				accum_alpha_rec = last_alpha + (1.f - last_alpha) * accum_alpha_rec;
+				dL_dalpha += (1 - accum_alpha_rec) * dL_daccum;
 			}
-#if DETACH_WEIGHT 
-			// if not detached weight, sometimes 
-			// it will bia toward creating extragated 2D Gaussians near front
-			dL_dweight += 0;
-#else
-			dL_dweight += (final_D2 + m_d * m_d * final_A - 2 * m_d * final_D) * dL_dreg;
+
+			if constexpr (MODE == RenderMode2D::FULL_GEOMETRY)
+			{
+				float dL_dweight = 0.0f;
+				const float m_d = far_n / (far_n - near_n) * (1 - near_n / c_d);
+				const float dmd_dd = (far_n * near_n) / ((far_n - near_n) * c_d * c_d);
+				if (contributor == median_contributor-1) dL_dz += dL_dmedian_depth;
+#if !DETACH_WEIGHT
+				dL_dweight += (final_D2 + m_d * m_d * final_A - 2 * m_d * final_D) * dL_dreg;
 #endif
-			dL_dalpha += dL_dweight - last_dL_dT;
-			// propagate the current weight W_{i} to next weight W_{i-1}
-			last_dL_dT = dL_dweight * alpha + (1 - alpha) * last_dL_dT;
-			const float dL_dmd = 2.0f * (T * alpha) * (m_d * final_A - final_D) * dL_dreg;
-			dL_dz += dL_dmd * dmd_dd;
+				dL_dalpha += dL_dweight - last_dL_dT;
+				last_dL_dT = dL_dweight * alpha + (1 - alpha) * last_dL_dT;
+				const float dL_dmd = 2.0f * (T * alpha) * (m_d * final_A - final_D) * dL_dreg;
+				dL_dz += dL_dmd * dmd_dd;
 
-			// Propagate gradients w.r.t ray-splat depths
-			accum_depth_rec = last_alpha * last_depth + (1.f - last_alpha) * accum_depth_rec;
-			last_depth = c_d;
-			dL_dalpha += (c_d - accum_depth_rec) * dL_ddepth;
-			// Propagate gradients w.r.t. color ray-splat alphas
-			accum_alpha_rec = last_alpha * 1.0 + (1.f - last_alpha) * accum_alpha_rec;
-			dL_dalpha += (1 - accum_alpha_rec) * dL_daccum;
+				accum_depth_rec = last_alpha * last_depth + (1.f - last_alpha) * accum_depth_rec;
+				last_depth = c_d;
+				dL_dalpha += (c_d - accum_depth_rec) * dL_ddepth;
 
-			// Propagate gradients to per-Gaussian normals
-			for (int ch = 0; ch < 3; ch++) {
-				accum_normal_rec[ch] = last_alpha * last_normal[ch] + (1.f - last_alpha) * accum_normal_rec[ch];
-				last_normal[ch] = normal[ch];
-				dL_dalpha += (normal[ch] - accum_normal_rec[ch]) * dL_dnormal2D[ch];
-				atomicAdd((&dL_dnormal3D[global_id * 3 + ch]), alpha * T * dL_dnormal2D[ch]);
+				for (int ch = 0; ch < 3; ch++) {
+					accum_normal_rec[ch] = last_alpha * last_normal[ch] + (1.f - last_alpha) * accum_normal_rec[ch];
+					last_normal[ch] = normal[ch];
+					dL_dalpha += (normal[ch] - accum_normal_rec[ch]) * dL_dnormal2D[ch];
+					atomicAdd((&dL_dnormal3D[global_id * 3 + ch]), alpha * T * dL_dnormal2D[ch]);
+				}
 			}
-#endif
 
 			dL_dalpha *= T;
 			// Update last alpha (to be used in the next iteration)
@@ -405,9 +405,8 @@ renderCUDA(
 
 			// Helpful reusable temporary variables
 			const float dL_dG = nor_o.w * dL_dalpha;
-#if RENDER_AXUTILITY
-			dL_dz += alpha * T * dL_ddepth; 
-#endif
+			if constexpr (MODE == RenderMode2D::FULL_GEOMETRY)
+				dL_dz += alpha * T * dL_ddepth;
 
 			if (rho3d <= rho2d) {
 				// Update gradients w.r.t. covariance of Gaussian 3x3 (T)
@@ -730,27 +729,26 @@ void BACKWARD::render(
 	float3* dL_dmean2D,
 	float* dL_dnormal3D,
 	float* dL_dopacity,
-	float* dL_dcolors)
+	float* dL_dcolors,
+	RenderMode2D render_mode)
 {
-	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
-		ranges,
-		point_list,
-		W, H,
-		focal_x, focal_y,
-		bg_color,
-		means2D,
-		normal_opacity,
-		transMats,
-		colors,
-		depths,
-		final_Ts,
-		n_contrib,
-		dL_dpixels,
-		dL_depths,
-		dL_dtransMat,
-		dL_dmean2D,
-		dL_dnormal3D,
-		dL_dopacity,
-		dL_dcolors
-		);
+	#define LAUNCH_BACKWARD_2D(MODE_VALUE) \
+		renderCUDA<NUM_CHANNELS, MODE_VALUE> << <grid, block >> >( \
+			ranges, point_list, W, H, focal_x, focal_y, bg_color, means2D, normal_opacity, \
+			transMats, colors, depths, final_Ts, n_contrib, dL_dpixels, dL_depths, \
+			dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity, dL_dcolors)
+
+	switch (render_mode)
+	{
+		case RenderMode2D::RGB_ONLY:
+			LAUNCH_BACKWARD_2D(RenderMode2D::RGB_ONLY);
+			break;
+		case RenderMode2D::RGB_ALPHA:
+			LAUNCH_BACKWARD_2D(RenderMode2D::RGB_ALPHA);
+			break;
+		case RenderMode2D::FULL_GEOMETRY:
+			LAUNCH_BACKWARD_2D(RenderMode2D::FULL_GEOMETRY);
+			break;
+	}
+	#undef LAUNCH_BACKWARD_2D
 }
