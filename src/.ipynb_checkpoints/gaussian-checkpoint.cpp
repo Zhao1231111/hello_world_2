@@ -576,7 +576,6 @@ GaussianModel::GaussianModel(const Params& prm)
     opacity_modifier_ = prm.opacity_modifier;
     scale_modifier_ = prm.scale_modifier;
     extend_debug_ = prm.extend_debug;
-    if_tileCull_in_extend_ = prm.if_tileCull_in_extend;
     if_full_regress_ = prm.if_full_regress;
 
     // === Backward Pose Optimization ===
@@ -2534,7 +2533,7 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
     auto spatial_mask = torch::logical_or(grad_mask, voxel_mask);
 
     // === Phase 4: 渲染 & 过滤 ===
-    auto render_pkg = render_2d(viewpoint_cam, pc, bg, 1.0f, pc->if_tileCull_in_extend_);
+    auto render_pkg = render_2d(viewpoint_cam, pc, bg, 1.0f);
     auto rendered_alpha = render_pkg.rendered_alpha.squeeze(); // (H, W)
 
     double alpha_threshold_base = pc->alpha_threshold_;

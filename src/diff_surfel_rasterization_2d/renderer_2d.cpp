@@ -140,8 +140,6 @@ torch::Tensor erodeBinaryMask(const torch::Tensor& binary_mask, int radius)
  * @param pc 高斯模型，包含所有高斯点的参数
  * @param bg_color 背景颜色 (R, G, B)
  * @param scaling_modifier 缩放因子修改器，用于控制高斯大小
- * @param use_tile_culling 是否使用Tile Culling
- *
  * @return RenderResult2D 包含渲染结果和中间变量的结构体
  */
 RenderResult2D render_2d(
@@ -149,7 +147,6 @@ RenderResult2D render_2d(
     const std::shared_ptr<GaussianModel>& pc,
     const torch::Tensor& bg_color,
     float scaling_modifier,
-    bool use_tile_culling,
     bool debug_mode,
     const torch::Tensor& render_mask,
     bool compute_extras
@@ -172,7 +169,6 @@ RenderResult2D render_2d(
         pc->sh_degree_,
         viewpoint_camera->camera_center_,
         false,  // prefiltered
-        use_tile_culling,  
         debug_mode   // debug
     );
 
@@ -446,8 +442,8 @@ PoseLinearization2D linearize_pose_2d(
             auto plus_camera = makePerturbedCamera(viewpoint_camera, plus_delta);
             auto minus_camera = makePerturbedCamera(viewpoint_camera, minus_delta);
 
-            auto render_plus = render_2d(plus_camera, pc, bg_color, 1.0f, false, false, torch::Tensor(), false);
-            auto render_minus = render_2d(minus_camera, pc, bg_color, 1.0f, false, false, torch::Tensor(), false);
+            auto render_plus = render_2d(plus_camera, pc, bg_color, 1.0f, false, torch::Tensor(), false);
+            auto render_minus = render_2d(minus_camera, pc, bg_color, 1.0f, false, torch::Tensor(), false);
 
             // [公式] J_k \approx (I(x+\epsilon e_k) - I(x-\epsilon e_k)) / (2\epsilon)
             jacobian_rgb = (render_plus.rendered_image - render_minus.rendered_image) / (2.0 * step);
@@ -455,7 +451,7 @@ PoseLinearization2D linearize_pose_2d(
         else
         {
             auto plus_camera = makePerturbedCamera(viewpoint_camera, plus_delta);
-            auto render_plus = render_2d(plus_camera, pc, bg_color, 1.0f, false, false, torch::Tensor(), false);
+            auto render_plus = render_2d(plus_camera, pc, bg_color, 1.0f, false, torch::Tensor(), false);
 
             // [公式] J_k \approx (I(x+\epsilon e_k) - I(x)) / \epsilon
             jacobian_rgb = (render_plus.rendered_image - base_render.rendered_image) / step;

@@ -114,7 +114,6 @@ RasterizeGaussiansCUDA(
 	const int degree,
 	const torch::Tensor& campos,
 	const bool prefiltered,
-	const bool use_tile_culling,
 	const bool debug)
 {
   // === 输入验证 ===
@@ -194,7 +193,6 @@ RasterizeGaussiansCUDA(
 		tan_fovx,
 		tan_fovy,
 		prefiltered,
-		use_tile_culling,
 		out_color.contiguous().data_ptr<float>(),
 		out_others.contiguous().data_ptr<float>(),
 		radii.contiguous().data_ptr<int>(),

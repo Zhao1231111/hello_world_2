@@ -321,9 +321,4 @@ throw std::runtime_error(cudaGetErrorString(ret)); \
 } \
 }
 
-// ========================== my code ==========================
-struct Quad {
-    float2 v[4]; // 四个顶点
-};
-
 #endif

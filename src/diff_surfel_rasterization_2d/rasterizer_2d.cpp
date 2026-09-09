@@ -62,7 +62,6 @@ GaussianRasterizer2DFunction::forward(
         raster_settings.sh_degree_,
         raster_settings.campos_,
         raster_settings.prefiltered_,
-        raster_settings.use_tile_culling_,
         raster_settings.debug_
     );
 

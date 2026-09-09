@@ -216,7 +216,6 @@ PoseFilterResult refineCurrentFramePose(
             background,
             1.0f,
             false,
-            false,
             torch::Tensor(),
             true);
 

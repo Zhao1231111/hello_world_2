@@ -32,14 +32,13 @@ struct GaussianRasterization2DSettings
         int sh_degree,
         torch::Tensor& campos,
         bool prefiltered,
-        bool use_tile_culling,
         bool debug)
         : image_height_(image_height), image_width_(image_width), 
           tanfovx_(tanfovx), tanfovy_(tanfovy),
           bg_(bg), scale_modifier_(scale_modifier), 
           viewmatrix_(viewmatrix), projmatrix_(projmatrix),
           sh_degree_(sh_degree), campos_(campos), 
-          prefiltered_(prefiltered), use_tile_culling_(use_tile_culling), debug_(debug)
+          prefiltered_(prefiltered), debug_(debug)
     {}
 
     int image_height_;
@@ -53,7 +52,6 @@ struct GaussianRasterization2DSettings
     int sh_degree_;
     torch::Tensor campos_;
     bool prefiltered_;
-    bool use_tile_culling_;
     bool debug_;
 };
 

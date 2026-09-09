@@ -273,7 +273,7 @@ inline std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, to
         f_curr = f_curr_sample.view({Orig_C_dim, num_points}).t();
 
         if (pc && pc->feature_extractor_ && bg.defined()) {
-            auto render_pkg = render_2d(current_cam, pc, bg, 1.0f, true, false, render_mask, false);
+            auto render_pkg = render_2d(current_cam, pc, bg, 1.0f, false, render_mask, false);
             auto render_tensor = render_pkg.rendered_image.unsqueeze(0);
             auto render_feat_map_curr = pc->feature_extractor_->extract(render_tensor).detach();
             
@@ -362,7 +362,7 @@ inline std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, to
         hist_f.index_put_({torch::indexing::Slice(), w_idx, torch::indexing::Slice()}, orig_feat * mask_f);
         
         if (pc && pc->feature_extractor_ && bg.defined()) {
-            auto render_pkg = render_2d(cam, pc, bg, 1.0f, true, false, render_mask, false);
+            auto render_pkg = render_2d(cam, pc, bg, 1.0f, false, render_mask, false);
             auto render_tensor = render_pkg.rendered_image.unsqueeze(0);
             auto render_feat_map = pc->feature_extractor_->extract(render_tensor).detach();
             
@@ -410,4 +410,3 @@ inline torch::Tensor compute_knn_distance(const torch::Tensor& fused_pixels) {
 
     return dis_tensor;
 }
-

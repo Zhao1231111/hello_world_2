@@ -146,8 +146,6 @@ public:
         scale_modifier = node["scale_modifier"].as<double>();
         opacity_modifier_up = node["opacity_modifier_up"].as<double>();
         extend_debug = node["extend_debug"].as<bool>();
-        if_tileCull_in_extend =
-            node["if_tileCull_in_extend"] ? node["if_tileCull_in_extend"].as<bool>() : false;
         if_full_regress =
             node["if_full_regress"] ? node["if_full_regress"].as<bool>() : false;
 
@@ -290,7 +288,6 @@ public:
     double opacity_modifier_up;
 
     bool extend_debug;
-    bool if_tileCull_in_extend;
     bool if_full_regress;
 
     // === Backward Pose Optimization (IEKF) ===

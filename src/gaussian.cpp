@@ -371,7 +371,7 @@ VisualQualityEvalResult evaluateCameraSplit(
     for (size_t camera_idx = 0; camera_idx < cameras.size(); ++camera_idx) {
         const auto& camera = cameras[camera_idx];
 
-        auto render_pkg = render_2d(camera, pc, bg, 1.0f, false);
+        auto render_pkg = render_2d(camera, pc, bg, 1.0f);
         auto rendered_image = render_pkg.rendered_image.clamp(0, 1);
         auto gt_image = camera->original_image_.to(torch::kCUDA).clamp(0, 1);
 
@@ -617,7 +617,6 @@ GaussianModel::GaussianModel(const Params& prm)
     scale_modifier_ = prm.scale_modifier;
     opacity_modifier_up_ = prm.opacity_modifier_up;
     extend_debug_ = prm.extend_debug;
-    if_tileCull_in_extend_ = prm.if_tileCull_in_extend;
     if_full_regress_ = prm.if_full_regress;
 
     // === Backward Pose Optimization ===
@@ -2441,7 +2440,7 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
     auto spatial_mask = torch::logical_or(grad_mask, voxel_mask);
 
     // === Phase 4: 渲染 & 过滤 ===
-    auto render_pkg = render_2d(viewpoint_cam, pc, bg, 1.0f, pc->if_tileCull_in_extend_);
+    auto render_pkg = render_2d(viewpoint_cam, pc, bg, 1.0f);
     auto rendered_alpha = render_pkg.rendered_alpha.squeeze(); // (H, W)
 
     double alpha_threshold_base = pc->alpha_threshold_;
@@ -3125,7 +3124,7 @@ double optimize(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<Gaussia
 
         // 渲染当前视角的图像（使用 2DGS 渲染器）
         pc->t_start_ = std::chrono::steady_clock::now();
-        auto render_pkg = render_2d(viewpoint_cam, pc, bg, 1.0f, false);
+        auto render_pkg = render_2d(viewpoint_cam, pc, bg, 1.0f);
         auto rendered_image = render_pkg.rendered_image;  // 渲染结果图像
         torch::cuda::synchronize();
         pc->t_end_ = std::chrono::steady_clock::now();
@@ -3401,7 +3400,7 @@ void runTrainVisualEvalIfNeeded(const std::shared_ptr<Dataset>& dataset,
     const bool has_lpips = (lpips_module != nullptr);
 
     // 重新渲染一次，得到“这张图刚训练完之后”的真实效果。
-    auto render_pkg = render_2d(train_camera, pc, bg, 1.0f, false);
+    auto render_pkg = render_2d(train_camera, pc, bg, 1.0f);
     auto rendered_image = render_pkg.rendered_image.clamp(0, 1);
     auto gt_image = train_camera->original_image_.to(torch::kCUDA).clamp(0, 1);
 

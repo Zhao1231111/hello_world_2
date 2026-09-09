@@ -106,7 +106,6 @@ RenderResult2D render_2d(
     const std::shared_ptr<GaussianModel>& pc,
     const torch::Tensor& bg_color,
     float scaling_modifier = 1.0f,
-    bool use_tile_culling = true,
     bool debug_mode = false,
     const torch::Tensor& render_mask = torch::Tensor(),
     bool compute_extras = true

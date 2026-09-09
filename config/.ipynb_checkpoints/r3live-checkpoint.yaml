@@ -135,5 +135,4 @@ densify_newborn_boost_steps: 20
 densify_newborn_pos_lr_scale: 2.0
 
 
-if_tileCull_in_extend: false # extend 中 Phase 4 的 render_2d 是否开启 tile culling
 if_full_regress: false # false: regress_mask = rendering_mask & spatial_mask; true: regress_mask = rendering_mask

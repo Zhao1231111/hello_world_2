@@ -70,7 +70,6 @@ RasterizeGaussiansCUDA(
 	const int degree,
 	const torch::Tensor& campos,
 	const bool prefiltered,
-	const bool use_tile_culling,
 	const bool debug);
 
 /**

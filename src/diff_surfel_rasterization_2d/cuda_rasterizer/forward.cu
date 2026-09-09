@@ -183,90 +183,6 @@ __device__ bool compute_aabb(
 	return true;
 }
 
-// Count number of tiles touched by Gaussian using warp-level parallelism
-// Adapted from 3DGS computeTilebasedCullingTileCount
-__device__ inline int computeTilebasedCullingTileCount2D(
-	const bool active,
-	const float3 Tu_init, const float3 Tv_init, const float3 Tw_init,
-	const float cutoff_init,
-	const uint2 rect_min_init, const uint2 rect_max_init)
-{
-	const int32_t tile_count_init = (rect_max_init.y - rect_min_init.y) * (rect_max_init.x - rect_min_init.x);
-	int tile_count = 0;
-
-	// Sequential phase for small number of tiles
-	if (active)
-	{
-		const uint32_t rect_width = (rect_max_init.x - rect_min_init.x);
-		for (int tile_idx = 0; tile_idx < tile_count_init && tile_idx < SEQUENTIAL_TILE_THRESH; tile_idx++)
-		{
-			const int y = (tile_idx / rect_width) + rect_min_init.y;
-			const int x = (tile_idx % rect_width) + rect_min_init.x;
-			if (check_tile_overlap({ x, y }, Tu_init, Tv_init, Tw_init, cutoff_init))
-				tile_count++;
-		}
-	}
-
-	const uint32_t lane_idx = cg::this_thread_block().thread_rank() % WARP_SIZE;
-	const int32_t compute_cooperatively = active && tile_count_init > SEQUENTIAL_TILE_THRESH;
-	const uint32_t remaining_threads = __ballot_sync(WARP_MASK, compute_cooperatively);
-
-	if (remaining_threads == 0)
-		return tile_count;
-
-	// Cooperative phase for large number of tiles
-	const uint32_t n_remaining_threads = __popc(remaining_threads);
-	for (int n = 0; n < n_remaining_threads && n < WARP_SIZE; n++)
-	{
-		// Find the N-th thread that needs help
-		int leader_idx = -1;
-		int temp_mask = remaining_threads;
-		for (int k = 0; k <= n; k++) {
-			leader_idx = __ffs(temp_mask) - 1; 
-			temp_mask &= ~(1 << leader_idx); 
-		}
-		const uint32_t i = leader_idx;
-
-		// Broadcast leader's data to the warp
-		const uint2 rect_min = make_uint2(__shfl_sync(WARP_MASK, rect_min_init.x, i), __shfl_sync(WARP_MASK, rect_min_init.y, i));
-		const uint2 rect_max = make_uint2(__shfl_sync(WARP_MASK, rect_max_init.x, i), __shfl_sync(WARP_MASK, rect_max_init.y, i));
-		
-		const float3 Tu = shfl_float3(Tu_init, i);
-		const float3 Tv = shfl_float3(Tv_init, i);
-		const float3 Tw = shfl_float3(Tw_init, i);
-		const float cutoff = __shfl_sync(WARP_MASK, cutoff_init, i);
-
-		const uint32_t rect_width = (rect_max.x - rect_min.x);
-		const uint32_t rect_tile_count = (rect_max.y - rect_min.y) * rect_width;
-		const uint32_t remaining_rect_tile_count = rect_tile_count - SEQUENTIAL_TILE_THRESH;
-
-		const int32_t n_iterations = (remaining_rect_tile_count + WARP_SIZE - 1) / WARP_SIZE;
-		
-		// Warp iterates over remaining tiles
-		for (int it = 0; it < n_iterations; it++)
-		{
-			const int tile_idx = it * WARP_SIZE + lane_idx + SEQUENTIAL_TILE_THRESH;
-			const int active_curr_it = tile_idx < rect_tile_count;
-
-			const int y = (tile_idx / rect_width) + rect_min.y;
-			const int x = (tile_idx % rect_width) + rect_min.x;
-
-			bool overlaps = false;
-			if (active_curr_it) {
-				overlaps = check_tile_overlap({ x, y }, Tu, Tv, Tw, cutoff);
-			}
-
-			const uint32_t contributes_ballot = __ballot_sync(WARP_MASK, overlaps);
-			const uint32_t n_contribute = __popc(contributes_ballot);
-
-			// Only the leader adds to its count
-			tile_count += (i == lane_idx) * n_contribute;
-		}
-	}
-
-	return tile_count;
-}
-
 /**
  * @brief 前向预处理内核：为光栅化准备每个高斯点的数据
  * 
@@ -297,8 +213,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float4* normal_opacity,        // [输出] 合并的法向(xyz)和不透明度(w)
 	const dim3 grid,               // Tile 网格尺寸
 	uint32_t* tiles_touched,       // [输出] 覆盖的 Tile 数量
-	bool prefiltered,
-	bool use_tile_culling)              
+	bool prefiltered)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
@@ -359,7 +274,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		radius = ceil(max(max(extent.x, extent.y), cutoff * FilterSize));
 	}
 
-	// 4. 计算覆盖的 Tile：使用精确剔除算法
+	// 4. 计算 AABB 覆盖的 Tile。这里仅做保守的包围盒分桶，不再执行实验性的
+	//    Ray-Splat tile 精确剔除，确保分桶范围与后续像素级 low-pass 计算一致。
 	uint2 rect_min, rect_max;
 	getRect(point_image, radius, rect_min, rect_max, grid);
 	
@@ -367,55 +283,20 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
 
-	//======= for tile-based culling =======
-	if(use_tile_culling)
-	{
-	// 使用 Ray-Splat Intersection 进行精确 Tile 剔除
-	// 提取 T 矩阵的列向量 (Tu, Tv, Tw)
-		float3 Tu = {T[0][0], T[0][1], T[0][2]};
-		float3 Tv = {T[1][0], T[1][1], T[1][2]};
-		float3 Tw = {T[2][0], T[2][1], T[2][2]};
-
-		int touched = computeTilebasedCullingTileCount2D(
-			true, Tu, Tv, Tw, cutoff, rect_min, rect_max
-		);
-
-		if (touched == 0)
-			return;
-
-			// 5. 计算颜色：如果使用了球谐函数(SH)，则转换为 RGB
-		if (colors_precomp == nullptr) {
-			glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
-			rgb[idx * C + 0] = result.x;
-			rgb[idx * C + 1] = result.y;
-			rgb[idx * C + 2] = result.z;
-		}
-
-		// 6. 存储预处理结果
-		depths[idx] = p_view.z;
-		radii[idx] = (int)radius;
-		points_xy_image[idx] = point_image;
-		normal_opacity[idx] = {normal.x, normal.y, normal.z, opacities[idx]};
-		tiles_touched[idx] = touched; // for tile-based culling
-
+	// 5. 计算颜色：如果使用了球谐函数(SH)，则转换为 RGB
+	if (colors_precomp == nullptr) {
+		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
+		rgb[idx * C + 0] = result.x;
+		rgb[idx * C + 1] = result.y;
+		rgb[idx * C + 2] = result.z;
 	}
-	else
-	{
-		// 5. 计算颜色：如果使用了球谐函数(SH)，则转换为 RGB
-		if (colors_precomp == nullptr) {
-			glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
-			rgb[idx * C + 0] = result.x;
-			rgb[idx * C + 1] = result.y;
-			rgb[idx * C + 2] = result.z;
-		}
 
-		// 6. 存储预处理结果
-		depths[idx] = p_view.z;
-		radii[idx] = (int)radius;
-		points_xy_image[idx] = point_image;
-		normal_opacity[idx] = {normal.x, normal.y, normal.z, opacities[idx]};
-		tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
-	}
+	// 6. 存储预处理结果。tiles_touched 与 duplicateWithKeys 写入数量严格一致。
+	depths[idx] = p_view.z;
+	radii[idx] = (int)radius;
+	points_xy_image[idx] = point_image;
+	normal_opacity[idx] = {normal.x, normal.y, normal.z, opacities[idx]};
+	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
 
 /**
@@ -660,8 +541,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	float4* normal_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
-	bool prefiltered,
-	bool use_tile_culling)
+	bool prefiltered)
 {
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
@@ -688,7 +568,6 @@ void FORWARD::preprocess(int P, int D, int M,
 		normal_opacity,
 		grid,
 		tiles_touched,
-		prefiltered,
-		use_tile_culling
+		prefiltered
 		);
 }
