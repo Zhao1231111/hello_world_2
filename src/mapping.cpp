@@ -334,8 +334,7 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
     double total_extending_time = 0;
 
     // 像素内核会跳过 alpha < 1/255 的贡献，而 alpha <= Gaussian 自身 opacity。
-    // 因此低于该阈值的 Gaussian 已不可能产生渲染或训练梯度。这里独立使用通用 prune，
-    // 不调用、也不依赖已经废弃的 densifyAndPrune 路径。
+    // 因此低于该阈值的 Gaussian 已不可能产生渲染或训练梯度。这里独立使用通用 prune。
     constexpr float kDeadOpacityThreshold = 1.0f / 255.0f;
     constexpr std::size_t kDeadOpacityPruneInterval = 10;
     auto prune_dead_gaussians = [&gaussians]() -> int64_t {
@@ -347,7 +346,7 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
         const int64_t prune_count = old_count - keep_count;
         if (prune_count > 0)
         {
-            // prune 会同步裁剪可训练参数、稀疏 Adam 状态、全局 ID 与辅助统计张量。
+            // prune 会同步裁剪可训练参数、稀疏 Adam 状态与全局 ID。
             gaussians->prune(keep_mask);
             std::cout << "[OpacityPrune] removed=" << prune_count
                       << ", remaining=" << keep_count << std::endl;

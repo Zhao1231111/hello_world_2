@@ -32,7 +32,6 @@ skybox_radius: 1000
 lambda_dist: 0.0005
 lambda_normal: 0.0
 slide_window_size: 15
-hiloss_threshold: 0.2
 hiColorLoss_threshold: 0.1
 train_times_threshold: 40
 # legacy
@@ -83,22 +82,6 @@ color_gradient_threshold: 0.02
 voxel_size: 0.1
 
 
-densify_grad_threshold: 0.001
-percent_dense: 0.01                   # 高斯尺度与场景范围比较阈值（用于致密化分支判断）
-densify_from_train_times: 200000          # 单帧训练达到该次数后才允许进入致密化候选
-densification_interval: 40            # 单帧按训练次数取模触发致密化（时间维度稀疏）
-densify_index_gap: 15                 # 同一轮被致密化帧的最小索引间隔（降低共视重叠）
-densify_max_per_round: 10              # 每轮 optimize 最多执行的致密化帧数
-densify_covis_window: 7              # 共视邻域半径（索引近似），用于跨轮训练门控
-densify_min_train_after_covis: 20     # 邻域上次致密化后，帧需新增的最小训练次数
-densify_train_gate_alpha: 0.5         # 训练充分性在候选打分中的权重（越大越偏向训练充分帧）
-post_densify_window_radius: 15        # 致密化后优先训练窗口半径（P_boost）
-post_densify_boost_rounds: 2          # 致密化后窗口优先保留轮数
-post_densify_boost_budget: 20         # 每轮分配给 P_boost 的最大样本数
-opacity_cull_threshold: 0.000005        # 致密化后按不透明度裁剪阈值
-scene_extent: 50.0                    # 场景范围估计（影响尺度相关判断）
-densify_alpha: 0.5                    # 致密化位移步长系数（分裂时扰动幅度）
-
 enable_normal_cull: false
 normal_z_cutoff: -0.001
 
@@ -120,11 +103,6 @@ pose_max_step_trans_cm: 3.0
 pose_rmse_increase_tolerance_ratio: 0.01
 pose_min_alpha_coverage_ratio: 0.005
 pose_alpha_erode_radius: 1
-
-densify_new_opacity_scale: 0.5
-densify_new_opacity_min: 0.005
-densify_newborn_boost_steps: 20
-densify_newborn_pos_lr_scale: 2.0
 
 # ============== config =======================
 

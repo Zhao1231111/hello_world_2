@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cuda_runtime_api.h>
 #include <torch/torch.h>
 #include <vector>
 #include <memory>

@@ -26,11 +26,9 @@
 #include <cmath>
 #include <unordered_map>
 #include <chrono>
-#include <deque>
 #include <utility>
 
 #include <torch/torch.h>
-#include <c10/cuda/CUDACachingAllocator.h>
 
 #include <opencv2/core.hpp>
 #include <opencv2/opencv.hpp>
@@ -162,22 +160,9 @@ public:
         torch::Tensor& new_opacities,
         torch::Tensor& new_scaling,
         torch::Tensor& new_rotation,
-        torch::Tensor& new_ids,
-        int newborn_boost_steps = 0);
+        torch::Tensor& new_ids);
 
     void prune(torch::Tensor& keep_mask);
-
-    void addDensificationStats(const torch::Tensor& screenspace_points,
-                               const torch::Tensor& visibility_mask,
-                               const torch::Tensor& radii,
-                               const torch::Tensor& screenspace_points_local = torch::Tensor(),
-                               const torch::Tensor& screenspace_points_mask = torch::Tensor());
-    void densifyAndClone(torch::Tensor& grads, double grad_threshold,
-                         double extent, const std::shared_ptr<Camera>& cam);
-    void densifyAndSplit(torch::Tensor& grads, double grad_threshold,
-                         double extent, const std::shared_ptr<Camera>& cam);
-    void densifyAndPrune(double max_grad, double min_opacity, double extent,
-                         int max_screen_size, const std::shared_ptr<Camera>& cam);
 
 public:
     int sh_degree_;//SH阶数
@@ -231,7 +216,6 @@ public:
     double opacity_prune_forRegress_;          // 回归高斯的 opacity 裁剪阈值
     
     int slide_window_size_;
-    double hiloss_threshold_;
     double hiColorLoss_threshold_;
     int train_times_threshold_;
     
@@ -270,7 +254,6 @@ public:
                                Tensor_vec_rotation_,
                                Tensor_vec_exposure_;
 
-    std::vector<double> keyframe_loss_;
     std::vector<int> keyframe_train_times_;
 
     std::shared_ptr<torch::optim::Adam> optimizer_;
@@ -325,39 +308,8 @@ public:
     double pose_min_alpha_coverage_ratio_ = 0.005;
     int pose_alpha_erode_radius_ = 1;
 
-    // === 致密化统计量 ===
-    torch::Tensor xyz_gradient_accum_; // (N, 2) 累积屏幕空间 2D 梯度向量 (dx, dy)
-    torch::Tensor denom_;              // (N, 1) 计数器
-    torch::Tensor max_radii2D_;        // (N,)   2D 投影最大半径
-
-    // === 致密化参数 ===
-    double densify_grad_threshold_;    // 梯度阈值
-    double percent_dense_;             // scale 判断百分比
-    int    densify_from_train_times_;  // 训练次数阈值
-    int    densification_interval_;    // 致密化间隔
-    int    densify_index_gap_;         // 同一轮被致密化帧的最小索引间隔
-    int    densify_max_per_round_;     // 每轮最多致密化帧数
-    int    densify_covis_window_;      // 共视邻域半径（索引近似）
-    int    densify_min_train_after_covis_; // 邻域上次致密化后最小训练增量
-    double densify_train_gate_alpha_;  // 训练充分性软加权系数
-    int    post_densify_window_radius_; // 致密化后窗口半径
-    int    post_densify_boost_rounds_;  // 致密化后窗口优先保留轮数
-    int    post_densify_boost_budget_;  // 每轮窗口优先预算
-    double opacity_cull_threshold_;    // 不透明度裁剪阈值
-    double scene_extent_;              // 场景范围
-    double densify_alpha_;             // 致密化位移步长倍数
-    double densify_new_opacity_scale_; // 致密化新增点透明度缩放
-    double densify_new_opacity_min_;   // 致密化新增点最小透明度
-    int    densify_newborn_boost_steps_; // 新生点位置梯度放大持续次数
-    double densify_newborn_pos_lr_scale_; // 新生点位置梯度放大倍数
-
-    int optimize_round_ = 0;                       // optimize 调用轮次计数
-    std::vector<int> last_densify_round_;          // 每帧上次被致密化轮次
-    std::vector<int> densify_selected_count_;      // 每帧被致密化次数
-    std::vector<int> neighbor_last_densify_train_stamp_; // 邻域上次致密化时该帧训练次数
-    std::vector<int> neighbor_last_densify_round_; // 邻域上次致密化轮次（调试）
-    std::deque<std::pair<int, int>> recent_densify_centers_; // (frame_idx, expire_round)
-    torch::Tensor newborn_steps_left_; // (N,) 新生点剩余“梯度放大”可见训练次数
+    // optimize 调用轮次仍用于可复现实验的随机种子和训练过程日志，与已删除的致密化无关。
+    int optimize_round_ = 0;
 
     // === 单帧训练过程可视化评估 ===
     bool enable_train_visual_eval_ = false;                  // 是否启用单帧训练过程评估

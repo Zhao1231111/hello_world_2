@@ -29,7 +29,6 @@
 #include <iomanip>
 #include <random>
 #include <algorithm>
-#include <unordered_set>
 #include <filesystem>
 #include <algorithm>
 #include <chrono>
@@ -581,7 +580,6 @@ GaussianModel::GaussianModel(const Params& prm)
     lambda_normal_ = prm.lambda_normal;
     alpha_threshold_ = prm.alpha_threshold;
     slide_window_size_ = prm.slide_window_size;
-    hiloss_threshold_ = prm.hiloss_threshold;
     hiColorLoss_threshold_ = prm.hiColorLoss_threshold;
     train_times_threshold_ = prm.train_times_threshold;
     scale_ratio_threshold_ = prm.scale_ratio_threshold;
@@ -647,27 +645,6 @@ GaussianModel::GaussianModel(const Params& prm)
     enable_regress_high_grad_traditional_init_ = prm.enable_regress_high_grad_traditional_init;
     regress_high_grad_keep_ratio_ = prm.regress_high_grad_keep_ratio;
     far_depth_threshold_ = prm.far_depth_threshold;
-
-    // 致密化参数
-    densify_grad_threshold_   = prm.densify_grad_threshold;
-    percent_dense_            = prm.percent_dense;
-    densify_from_train_times_ = prm.densify_from_train_times;
-    densification_interval_   = prm.densification_interval;
-    densify_index_gap_        = prm.densify_index_gap;
-    densify_max_per_round_    = prm.densify_max_per_round;
-    densify_covis_window_     = prm.densify_covis_window;
-    densify_min_train_after_covis_ = prm.densify_min_train_after_covis;
-    densify_train_gate_alpha_ = prm.densify_train_gate_alpha;
-    post_densify_window_radius_ = prm.post_densify_window_radius;
-    post_densify_boost_rounds_  = prm.post_densify_boost_rounds;
-    post_densify_boost_budget_  = prm.post_densify_boost_budget;
-    opacity_cull_threshold_   = prm.opacity_cull_threshold;
-    scene_extent_             = prm.scene_extent;
-    densify_alpha_            = prm.densify_alpha;
-    densify_new_opacity_scale_ = prm.densify_new_opacity_scale;
-    densify_new_opacity_min_   = prm.densify_new_opacity_min;
-    densify_newborn_boost_steps_ = prm.densify_newborn_boost_steps;
-    densify_newborn_pos_lr_scale_ = prm.densify_newborn_pos_lr_scale;
 
     enable_train_visual_eval_ = prm.enable_train_visual_eval;
     train_visual_eval_every_k_train_times_ = prm.train_visual_eval_every_k_train_times;
@@ -1785,12 +1762,6 @@ void GaussianModel::trainingSetup()
         exposure_optimizer_->param_groups()[0].options().set_lr(exposure_lr_);
     }
 
-    // 初始化致密化统计量
-    int64_t N = this->xyz_.size(0);
-    this->xyz_gradient_accum_ = torch::zeros({N, 2}, torch::kFloat32).cuda();
-    this->denom_               = torch::zeros({N, 1}, torch::kFloat32).cuda();
-    this->max_radii2D_         = torch::zeros({N},    torch::kFloat32).cuda();
-    this->newborn_steps_left_  = torch::zeros({N}, torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA));
 }
 
 /**
@@ -1827,10 +1798,8 @@ void GaussianModel::densificationPostfix(
     torch::Tensor& new_opacities,
     torch::Tensor& new_scaling,
     torch::Tensor& new_rotation,
-    torch::Tensor& new_ids,
-    int newborn_boost_steps)
+    torch::Tensor& new_ids)
 {
-    const int64_t old_N = this->xyz_.size(0);
     // 准备存储更新后的可优化张量（6种参数类型：xyz, features_dc, features_rest, opacity, scaling, rotation）
     std::vector<torch::Tensor> optimizable_tensors(6);
 
@@ -1935,34 +1904,6 @@ void GaussianModel::densificationPostfix(
     // Update global IDs (not optimizable, just concatenation)
     this->global_ids_ = torch::cat({this->global_ids_, new_ids}, 0);
 
-    // 扩展“新生点位置梯度放大计数器”，仅对本次新增点设置初始计数
-    {
-        auto steps_opts = torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA);
-        if (!newborn_steps_left_.defined() || newborn_steps_left_.numel() == 0 || newborn_steps_left_.size(0) != old_N) {
-            newborn_steps_left_ = torch::zeros({old_N}, steps_opts);
-        }
-        const int init_steps = std::max(0, newborn_boost_steps);
-        const int64_t added = (int64_t)new_xyz.size(0);
-        auto appended = torch::full({added}, init_steps, steps_opts);
-        newborn_steps_left_ = torch::cat({newborn_steps_left_, appended}, 0);
-    }
-
-    // 扩展致密化统计量（新增高斯部分补零）
-    int64_t added = (int64_t)new_xyz.size(0);
-    if (xyz_gradient_accum_.defined() && xyz_gradient_accum_.size(0) > 0) {
-            this->xyz_gradient_accum_ = torch::cat({
-                this->xyz_gradient_accum_,
-                torch::zeros({added, 2}, torch::kFloat32).cuda()
-            }, 0);
-            this->denom_ = torch::cat({
-                this->denom_,
-                torch::zeros({added, 1}, torch::kFloat32).cuda()
-            }, 0);
-        this->max_radii2D_ = torch::cat({
-            this->max_radii2D_,
-            torch::zeros({added}, torch::kFloat32).cuda()
-        }, 0);
-    }
 }
 
 
@@ -2023,287 +1964,7 @@ void GaussianModel::densificationPostfix(
      // Prune global IDs
      this->global_ids_ = this->global_ids_.index({keep_mask, torch::indexing::Slice()});
 
-    // 裁剪致密化统计量
-    if (xyz_gradient_accum_.defined() && xyz_gradient_accum_.size(0) == keep_mask.size(0)) {
-        this->xyz_gradient_accum_ = this->xyz_gradient_accum_.index(
-            {keep_mask, torch::indexing::Slice()});
-        this->denom_ = this->denom_.index(
-            {keep_mask, torch::indexing::Slice()});
-        this->max_radii2D_ = this->max_radii2D_.index({keep_mask});
-    }
-    if (newborn_steps_left_.defined() && newborn_steps_left_.size(0) == keep_mask.size(0)) {
-        newborn_steps_left_ = newborn_steps_left_.index({keep_mask});
-    }
  }
-
-// ============================================================
-// 致密化辅助函数：构建 R_wc 矩阵并将屏幕空间梯度方向反投影至世界系
-// ============================================================
-static torch::Tensor computeWorldDir(
-    const torch::Tensor& grad_dir_2d,   // (M, 2) 归一化2D梯度方向
-    float fx, float fy,
-    const Eigen::Matrix3d& R_cw)
-{
-    int M = (int)grad_dir_2d.size(0);
-    auto R_cw_f = R_cw.cast<float>();
-    // R_wc = R_cw^T
-    auto R_wc = torch::tensor(
-        {(float)R_cw_f(0,0), (float)R_cw_f(1,0), (float)R_cw_f(2,0),
-         (float)R_cw_f(0,1), (float)R_cw_f(1,1), (float)R_cw_f(2,1),
-         (float)R_cw_f(0,2), (float)R_cw_f(1,2), (float)R_cw_f(2,2)},
-        torch::kFloat32).reshape({3, 3}).cuda();
-
-    // 相机系方向：(dx/fx, dy/fy, 0)
-    auto dir_cam = torch::zeros({M, 3}, torch::kFloat32).cuda();
-    dir_cam.index_put_({torch::indexing::Slice(), 0},
-        grad_dir_2d.index({torch::indexing::Slice(), 0}) / fx);
-    dir_cam.index_put_({torch::indexing::Slice(), 1},
-        grad_dir_2d.index({torch::indexing::Slice(), 1}) / fy);
-    // z = 0: 保持平面内方向
-
-    // 归一化后变换到世界系
-    auto dir_cam_norm = torch::nn::functional::normalize(
-        dir_cam, torch::nn::functional::NormalizeFuncOptions().dim(1));
-    return torch::matmul(dir_cam_norm, R_wc.t());  // (M, 3)
-}
-
-// ============================================================
-// addDensificationStats: 累积梯度统计信息
-// 必须在 loss.backward() 之后、optimizer.zero_grad() 之前调用
-// ============================================================
-void GaussianModel::addDensificationStats(
-    const torch::Tensor& screenspace_points,
-    const torch::Tensor& visibility_mask,
-    const torch::Tensor& radii,
-    const torch::Tensor& screenspace_points_local,
-    const torch::Tensor& screenspace_points_mask)
-{
-    // 更新2D最大半径
-    auto vis_f = visibility_mask;
-    this->max_radii2D_.index_put_(
-        {vis_f},
-        torch::max(this->max_radii2D_.index({vis_f}),
-                   radii.index({vis_f}).to(torch::kFloat32))
-    );
-
-    // 累积屏幕空间 (dx, dy) 梯度向量
-    auto grad_src = screenspace_points.grad();
-    if (!grad_src.defined() && screenspace_points_local.defined()) {
-        grad_src = screenspace_points_local.grad();
-        if (grad_src.defined() && screenspace_points_mask.defined()) {
-            auto N_full = screenspace_points.size(0);
-            auto grad_full = torch::zeros({N_full, 3}, grad_src.options());
-            grad_full = grad_full.index_put({screenspace_points_mask}, grad_src, /*accumulate=*/false);
-            grad_src = grad_full;
-        }
-    }
-
-    if (grad_src.defined()) {
-        auto grad_xy = grad_src
-                         .index({torch::indexing::Slice(),
-                                 torch::indexing::Slice(0, 2)})  // (N, 2)
-                         .detach();
-        this->xyz_gradient_accum_.index_put_(
-            {vis_f},
-            this->xyz_gradient_accum_.index({vis_f}) + grad_xy.index({vis_f})
-        );
-        this->denom_.index_put_(
-            {vis_f},
-            this->denom_.index({vis_f}) + 1.0f
-        );
-    }
-}
-
-// 将母高斯 opacity 映射为“更保守”的新增点 opacity（在 sigmoid 域做缩放更直观）
-static torch::Tensor buildChildOpacityFromParent(
-    const torch::Tensor& parent_opacity_logit,
-    double opacity_scale,
-    double min_alpha)
-{
-    auto parent_alpha = torch::sigmoid(parent_opacity_logit.detach());
-    const float safe_scale = std::max(0.0f, static_cast<float>(opacity_scale));
-    const float safe_min_alpha = std::clamp(static_cast<float>(min_alpha), 1e-5f, 0.95f);
-    auto child_alpha = torch::clamp(parent_alpha * safe_scale, 1e-5f, 0.95f);
-    // 仅在母点本身不低于下限时，才给子点加下限，避免把极低母点“抬亮”。
-    auto floor_alpha = torch::full_like(child_alpha, safe_min_alpha);
-    child_alpha = torch::where(parent_alpha >= floor_alpha,
-                               torch::maximum(child_alpha, floor_alpha),
-                               child_alpha);
-    return general_utils::inverse_sigmoid(child_alpha);
-}
-
-// ============================================================
-// densifyAndClone: 梯度大 + scale 小 -> 沿梯度正方向克隆一个新高斯
-// ============================================================
-void GaussianModel::densifyAndClone(
-    torch::Tensor& grads,
-    double grad_threshold,
-    double extent,
-    const std::shared_ptr<Camera>& cam)
-{
-    auto grad_norms = torch::norm(grads, 2, /*dim=*/1);  // (N,)
-    auto selected   = grad_norms >= (float)grad_threshold;
-    auto max_scale  = std::get<0>(torch::max(this->getScaling(), 1));  // (N,)
-    selected = torch::logical_and(selected,
-                                  max_scale <= (float)(percent_dense_ * extent)); // 小高斯的定义：系数percent_dense_ 与场景尺寸extent相乘后的结果
-
-    int num_sel = selected.sum().item<int>();
-    if (num_sel == 0) return;
-
-    // -- 计算世界系偏移方向 --
-    auto sel_grads   = grads.index({selected});                         // (M, 2)
-    auto sel_norms   = grad_norms.index({selected}).unsqueeze(1).clamp_min(1e-8f);
-    auto grad_dir_2d = sel_grads / sel_norms;                           // (M, 2)
-
-    auto dir_world = computeWorldDir(grad_dir_2d, cam->fx_, cam->fy_, cam->R_cw_); // (M, 3)
-    auto alpha = (float)densify_alpha_ *
-                 max_scale.index({selected}).unsqueeze(1).detach();     // (M, 1)
-
-    // -- 新高斯：位置沿梯度正方向偏移 --
-    auto new_xyz         = this->xyz_.index({selected}).detach() + alpha * dir_world;
-    auto new_features_dc = this->features_dc_.index({selected}).detach();
-    auto new_features_rest = this->features_rest_.index({selected}).detach();
-    auto new_opacity = buildChildOpacityFromParent(
-        this->opacity_.index({selected}),
-        densify_new_opacity_scale_,
-        densify_new_opacity_min_);
-    auto new_scaling     = this->scaling_.index({selected}).detach();
-    auto new_rotation    = this->rotation_.index({selected}).detach();
-
-    int64_t num_new = (int64_t)num_sel;
-    auto new_ids = torch::arange(max_id_, max_id_ + num_new,
-                                  torch::kInt64).view({num_new, 1}).cuda();
-    max_id_ += num_new;
-
-    this->densificationPostfix(new_xyz, new_features_dc, new_features_rest,
-                               new_opacity, new_scaling, new_rotation, new_ids,
-                               densify_newborn_boost_steps_);
-
-    // Padding grads to match the new number of points
-    grads = torch::cat({grads, torch::zeros({num_new, 2}, grads.options())}, 0);
-}
-
-// ============================================================
-// densifyAndSplit: 梯度大 + scale 大 -> 就地修改母高斯 + 新增一个负方向子高斯
-// 母高斯保留（ID 不变），就地移位 +α 并缩小 scale
-// 子高斯新增（负方向 -α），参数从母高斯复制
-// ============================================================
-void GaussianModel::densifyAndSplit(
-    torch::Tensor& grads,
-    double grad_threshold,
-    double extent,
-    const std::shared_ptr<Camera>& cam)
-{
-    auto grad_norms = torch::norm(grads, 2, 1);  // (N,)
-    auto selected   = grad_norms >= (float)grad_threshold;
-    auto max_scale  = std::get<0>(torch::max(this->getScaling(), 1));  // (N,)
-    selected = torch::logical_and(selected,
-                                  max_scale > (float)(percent_dense_ * extent));
-
-    int num_sel = selected.sum().item<int>();
-    if (num_sel == 0) return;
-
-    // -- 计算世界系偏移方向 --
-    auto sel_grads   = grads.index({selected});                      // (M, 2)
-    auto sel_norms   = grad_norms.index({selected}).unsqueeze(1).clamp_min(1e-8f);
-    auto grad_dir_2d = sel_grads / sel_norms;                        // (M, 2)
-
-    auto dir_world = computeWorldDir(grad_dir_2d, cam->fx_, cam->fy_, cam->R_cw_);  // (M, 3)
-    auto alpha = (float)densify_alpha_ *
-                 max_scale.index({selected}).unsqueeze(1).detach();  // (M, 1)
-
-    // == 步骤1：就地修改母高斯（NoGradGuard 保护，等价于 param.data[mask] = val）==
-    {
-        torch::NoGradGuard no_grad;
-
-        // 母高斯位置 → 正方向偏移 +α
-        auto base_xyz = this->xyz_.index({selected}).detach();
-        this->xyz_.index_put_({selected},
-            (base_xyz + alpha * dir_world).detach());
-
-        // 母高斯 scale → 缩小（分裂后两侧各变小）
-        auto new_scale_log = torch::log(
-            this->getScaling().index({selected}).detach() / (0.8f * 2.0f));
-        this->scaling_.index_put_({selected}, new_scale_log.detach());
-    }
-
-    // == 步骤2：新增子高斯（负方向，参数从母高斯当前值复制）==
-    // 负方向位置 = 正方向位置 - 2α·dir = (p+α·d) - 2α·d = p - α·d
-    auto new_xyz = this->xyz_.index({selected}).detach()
-                   - 2.0f * alpha * dir_world.detach();  // (M, 3)
-
-    // scale 直接用已缩小后的母高斯 scale（已在步骤1中修改）
-    auto new_scaling_val  = this->scaling_.index({selected}).detach();
-    auto new_rotation     = this->rotation_.index({selected}).detach();
-    auto new_features_dc  = this->features_dc_.index({selected}).detach();
-    auto new_features_rest= this->features_rest_.index({selected}).detach();
-    auto new_opacity = buildChildOpacityFromParent(
-        this->opacity_.index({selected}),
-        densify_new_opacity_scale_,
-        densify_new_opacity_min_);
-
-    int64_t num_new = (int64_t)num_sel;
-    auto new_ids = torch::arange(max_id_, max_id_ + num_new,
-                                  torch::kInt64).view({num_new, 1}).cuda();
-    max_id_ += num_new;
-
-    // densificationPostfix 会同时扩展 xyz_gradient_accum_, denom_, max_radii2D_
-    this->densificationPostfix(new_xyz, new_features_dc, new_features_rest,
-                               new_opacity, new_scaling_val, new_rotation, new_ids,
-                               densify_newborn_boost_steps_);
-    
-    // Padding grads to match the new number of points
-    grads = torch::cat({grads, torch::zeros({num_new, 2}, grads.options())}, 0);
-    // 无需 prune：母高斯就地保留
-}
-
-// ============================================================
-// densifyAndPrune: 执行克隆+分裂，然后按不透明度/大小裁剪高斯
-// ============================================================
-void GaussianModel::densifyAndPrune(
-    double max_grad, double min_opacity, double extent,
-    int max_screen_size,
-    const std::shared_ptr<Camera>& cam)
-{
-    // 1. 计算平均梯度向量 (N, 2)，避免除以0
-    auto grads = this->xyz_gradient_accum_ /
-                 this->denom_.clamp_min(1.0f);
-    grads = torch::nan_to_num(grads, 0.0, 0.0, 0.0);
-    int64_t old_N = this->opacity_.size(0);
-
-    std::cout << "grads statics: min " << grads.min().item<double>()
-              << ", max " << grads.max().item<double>()
-              << ", mean " << grads.mean().item<double>() << std::endl;
-
-    // 2. 执行克隆和分裂
-    this->densifyAndClone(grads, max_grad, extent, cam);
-    this->densifyAndSplit(grads, max_grad, extent, cam);
-
-    // 注意：densifyAndClone/Split 之后高斯总数已变化，
-    // grads 的尺寸与当前 xyz_ 不匹配，下面的 prune 使用 getOpacity() 即可
-
-    // 3. 裁剪不透明度过低或半径过大（屏幕空间）的高斯
-    auto prune_mask = (this->getOpacity() < (float)min_opacity).squeeze();
-    auto num_opacity = prune_mask.sum().item<int>();
-    std::cout << num_opacity << " gaussians will be prune for too low opacity" <<std::endl;
-    // if (max_screen_size > 0) {
-    //     auto big_vs = this->max_radii2D_ > (float)max_screen_size;
-    //     auto num_big = big_vs.sum().item<int>();
-    //     std::cout << num_big << " gaussians will be prune for too big" <<std::endl;
-    //     prune_mask = torch::logical_or(prune_mask, big_vs);
-    // }
-    auto keep_mask = torch::logical_not(prune_mask);
-    this->prune(keep_mask);
-
-    // 4. 重置全部统计量（densifyAndPrune 之后统计从零开始累积）
-    int64_t new_N = this->xyz_.size(0);
-    this->xyz_gradient_accum_ = torch::zeros({new_N, 2}, torch::kFloat32).cuda();
-    this->denom_               = torch::zeros({new_N, 1}, torch::kFloat32).cuda();
-    this->max_radii2D_         = torch::zeros({new_N},    torch::kFloat32).cuda();
-
-    c10::cuda::CUDACachingAllocator::emptyCache();
-    std::cout << "\033[1;36m[Densify] add GS=" << new_N - old_N << "\033[0m" << std::endl;
-}
 
 void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianModel>& pc,
             std::shared_ptr<SPNetWrapper> spnet,
@@ -2898,19 +2559,16 @@ double optimize(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<Gaussia
     // === 视角选择和计时初始化 ===
     pc->t_start_ = std::chrono::steady_clock::now();
     int updated_num = 0;  // 统计总的可见高斯点数量
-    int densify_executed = 0;
     std::vector<int> opt_list;  // 选定的训练视角索引列表
     int max_iters = 100;  // 最大优化视角数量
 
-    // 获取所有训练相机数量并创建索引列表
     // 获取所有训练相机数量并创建索引列表
     int train_camera_num = dataset->train_cameras_.size();
     int test_camera_num = dataset->test_cameras_.size();
     int total_camera_num = pc->generate_dataset_ ? train_camera_num + test_camera_num : train_camera_num;
     
-    // Update tracking vectors
-    if (pc->keyframe_loss_.size() < total_camera_num) {
-        pc->keyframe_loss_.resize(total_camera_num, 10000.0); // Init with high loss
+    // 训练次数还用于决定何时启用几何正则项以及独立的 scale-ratio prune。
+    if (pc->keyframe_train_times_.size() < total_camera_num) {
         pc->keyframe_train_times_.resize(total_camera_num, 0);
     }
     std::random_device rd;
@@ -2918,185 +2576,41 @@ double optimize(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<Gaussia
         ? static_cast<uint32_t>(pc->experiment_seed_) + static_cast<uint32_t>(pc->optimize_round_ * 2654435761U)
         : rd();
     std::mt19937 gen(optimize_seed);
-    std::uniform_real_distribution<double> uni01(0.0, 1.0);
-
-    // 首次扩容时初始化“致密化历史状态”
-    // - last_densify_round_: 帧自身上次被致密化的轮次
-    // - densify_selected_count_: 帧被选中致密化的累计次数（用于公平性抑制）
-    // - neighbor_last_densify_train_stamp_: 该帧所在共视邻域上次致密化时，它的训练次数快照
-    if (pc->last_densify_round_.size() < total_camera_num) {
-        pc->last_densify_round_.resize(total_camera_num, -1000000000);
-        pc->densify_selected_count_.resize(total_camera_num, 0);
-        pc->neighbor_last_densify_train_stamp_.resize(total_camera_num, 0);
-        pc->neighbor_last_densify_round_.resize(total_camera_num, -1000000000);
-    }
     pc->optimize_round_ += 1;
 
-    // 清理过期的“致密化后优先训练窗口”
-    while (!pc->recent_densify_centers_.empty() &&
-           pc->recent_densify_centers_.front().second < pc->optimize_round_) {
-        pc->recent_densify_centers_.pop_front();
-    }
-
-    // === 全局致密化选择（与 opt_list 解耦）===
-    struct DensifyCandidate {
-        int idx;
-        double score;
-    };
-    std::vector<DensifyCandidate> densify_candidates;
-    densify_candidates.reserve(train_camera_num);
-    int max_staleness = 1;
-    int max_train_gap = 1;
-    // 训练充分性硬门槛：同一共视邻域再次致密化前，至少积累这么多训练次数
-    const int min_train_gap = std::max(1, pc->densify_min_train_after_covis_);
-    for (int i = 0; i < train_camera_num; ++i) {
-        // 先过已有硬条件：训练次数达到阈值 + 按 densification_interval 稀疏触发
-        if (pc->keyframe_train_times_[i] < pc->densify_from_train_times_) continue;
-        if (pc->densification_interval_ <= 0) continue;
-        if (pc->keyframe_train_times_[i] % pc->densification_interval_ != 0) continue;
-        // 再过新增硬门控：上次邻域致密化后，该帧训练增量必须足够
-        const int train_gap = pc->keyframe_train_times_[i] - pc->neighbor_last_densify_train_stamp_[i];
-        if (train_gap < min_train_gap) continue;
-        int staleness = pc->optimize_round_ - pc->last_densify_round_[i];
-        max_train_gap = std::max(max_train_gap, train_gap);
-        max_staleness = std::max(max_staleness, staleness);
-    }
-    for (int i = 0; i < train_camera_num; ++i) {
-        if (pc->keyframe_train_times_[i] < pc->densify_from_train_times_) continue;
-        if (pc->densification_interval_ <= 0) continue;
-        if (pc->keyframe_train_times_[i] % pc->densification_interval_ != 0) continue;
-        const int train_gap = pc->keyframe_train_times_[i] - pc->neighbor_last_densify_train_stamp_[i];
-        if (train_gap < min_train_gap) continue;
-
-        const double stale_norm = static_cast<double>(pc->optimize_round_ - pc->last_densify_round_[i]) /
-                                  static_cast<double>(max_staleness);
-        const double train_gap_norm = static_cast<double>(train_gap) / static_cast<double>(max_train_gap);
-        // 随机公平打分：
-        // - U(0,1): 保持随机性，避免固定总是同几帧
-        // - stale_norm: 越久没被致密化，越容易被选中
-        // - densify_selected_count_: 被频繁选中过的帧降权
-        // - train_gap_norm: 训练增量越充分，优先级越高
-        const double score = uni01(gen) + 0.5 * stale_norm - 0.1 * pc->densify_selected_count_[i]
-                           + pc->densify_train_gate_alpha_ * train_gap_norm;
-        densify_candidates.push_back({i, score});
-    }
-    std::sort(densify_candidates.begin(), densify_candidates.end(),
-              [](const DensifyCandidate& a, const DensifyCandidate& b) {
-                  return a.score > b.score;
-              });
-
-    // 同一轮内索引稀疏化：避免共视强的近邻帧同时致密化
-    const int min_gap = std::max(1, pc->densify_index_gap_);
-    const int max_densify = std::max(0, pc->densify_max_per_round_);
-    std::unordered_set<int> selected_densify_set;
-    std::vector<int> selected_densify_list;
-    for (const auto& c : densify_candidates) {
-        bool conflict = false;
-        for (int chosen_idx : selected_densify_list) {
-            if (std::abs(c.idx - chosen_idx) < min_gap) {
-                conflict = true;
-                break;
-            }
-        }
-        if (conflict) continue;
-        selected_densify_set.insert(c.idx);
-        selected_densify_list.push_back(c.idx);
-        if ((int)selected_densify_list.size() >= max_densify) break;
-    }
-    if (!selected_densify_list.empty()) {
-        std::cout << "[DensifySelect] round " << pc->optimize_round_ << ", selected idx:";
-        for (int i : selected_densify_list) std::cout << " " << i;
-        std::cout << " (gap>=" << min_gap << ")" << std::endl;
-        std::cout << "[DensifySelect] train_gap:";
-        for (int i : selected_densify_list) {
-            int train_gap = pc->keyframe_train_times_[i] - pc->neighbor_last_densify_train_stamp_[i];
-            std::cout << " [" << i << ":" << train_gap << "]";
-        }
-        std::cout << " (min_required=" << min_train_gap << ")" << std::endl;
-    }
-
-    // === 构建 opt_list，优先级：P1 > P_boost > P2 > P3 ===
-    // P1: 最新滑窗关键帧（保持最高优先级）
-    int start_idx_p1 = std::max(0, train_camera_num - pc->slide_window_size_);
+    // === 构建 opt_list：最新滑窗 P1 + 其余历史帧均匀随机抽样 ===
+    // P1 始终取最新的训练关键帧。使用实际 p1_count 计算剩余预算，避免在相机数未超过
+    // max_iters 时提前丢帧，也避免 slide_window_size 大于总预算时排除最新帧。
+    const int p1_count = std::min({
+        train_camera_num,
+        std::max(0, pc->slide_window_size_),
+        max_iters
+    });
+    const int start_idx_p1 = train_camera_num - p1_count;
     std::vector<int> p1_candidates;
-    p1_candidates.reserve(pc->slide_window_size_);
-    std::vector<char> in_p1(train_camera_num, 0);
+    p1_candidates.reserve(p1_count);
     for (int i = start_idx_p1; i < train_camera_num; ++i) {
         p1_candidates.push_back(i);
-        in_p1[i] = 1;
     }
 
-    // P_boost:
-    // - forced: 本轮被选中致密化的中心帧，尽量在本轮内被训练到
-    // - candidates: 历史致密化中心的窗口邻域帧（用于后续几轮补充训练）
-    std::vector<int> p_boost_forced;
-    std::vector<int> p_boost_candidates;
-    std::vector<char> in_boost(train_camera_num, 0);
-    for (int idx : selected_densify_list) {
-        if (idx < 0 || idx >= train_camera_num) continue;
-        if (in_p1[idx] || in_boost[idx]) continue;
-        in_boost[idx] = 1;
-        p_boost_forced.push_back(idx);
+    // 旧帧不再按陈旧的 keyframe_loss 分层；先无放回洗牌，再用剩余预算截断。
+    // 当前实验范围仅为 baseline，因此候选池只包含训练关键帧。
+    std::vector<int> historical_candidates;
+    historical_candidates.reserve(start_idx_p1);
+    for (int i = 0; i < start_idx_p1; ++i) {
+        historical_candidates.push_back(i);
     }
-    const int boost_radius = std::max(0, pc->post_densify_window_radius_);
-    for (const auto& item : pc->recent_densify_centers_) {
-        const int center = item.first;
-        const int left = std::max(0, center - boost_radius);
-        const int right = std::min(train_camera_num - 1, center + boost_radius);
-        for (int i = left; i <= right; ++i) {
-            if (in_p1[i] || in_boost[i]) continue;
-            in_boost[i] = 1;
-            p_boost_candidates.push_back(i);
-        }
-    }
-    std::shuffle(p_boost_forced.begin(), p_boost_forced.end(), gen);
-    std::shuffle(p_boost_candidates.begin(), p_boost_candidates.end(), gen);
+    std::shuffle(historical_candidates.begin(), historical_candidates.end(), gen);
 
-    // P2/P3 维持原逻辑：高损失帧优先，其余随机
-    std::vector<int> p2_candidates;
-    std::vector<int> p3_candidates;
-    for (int i = 0; i < train_camera_num; ++i) {
-        if (in_p1[i] || in_boost[i]) continue;
-        if (pc->keyframe_loss_[i] > pc->hiloss_threshold_) p2_candidates.push_back(i);
-        else p3_candidates.push_back(i);
-    }
-    
-    if (pc->generate_dataset_) {
-        for (int i = train_camera_num; i < total_camera_num; ++i) {
-            p3_candidates.push_back(i);
-        }
-    }
-    std::shuffle(p2_candidates.begin(), p2_candidates.end(), gen);
-    std::shuffle(p3_candidates.begin(), p3_candidates.end(), gen);
-
-    // 分层拼接，不打乱层级顺序；每层内部已随机
-    auto append_with_budget = [&](const std::vector<int>& src, int budget = -1) {
+    // 分层拼接，不打乱层级顺序；每层内部已随机。
+    auto append_with_budget = [&](const std::vector<int>& src) {
         if ((int)opt_list.size() >= max_iters) return;
         int take = std::min((int)src.size(), max_iters - (int)opt_list.size());
-        if (budget >= 0) take = std::min(take, budget);
         opt_list.insert(opt_list.end(), src.begin(), src.begin() + take);
     };
 
     append_with_budget(p1_candidates);
-    append_with_budget(p_boost_forced);
-    int remaining_boost_budget = std::max(0, pc->post_densify_boost_budget_) - (int)p_boost_forced.size();
-    append_with_budget(p_boost_candidates, std::max(0, remaining_boost_budget));
-    append_with_budget(p2_candidates);
-    append_with_budget(p3_candidates);
-
-    if (!selected_densify_list.empty()) {
-        std::vector<char> in_opt(total_camera_num, 0);
-        for (int idx : opt_list) in_opt[idx] = 1;
-        int missing = 0;
-        for (int idx : selected_densify_list) {
-            if (idx < 0 || idx >= train_camera_num) continue;
-            if (!in_opt[idx]) missing++;
-        }
-        if (missing > 0) {
-            std::cout << "[DensifySelect] warning: " << missing
-                      << " selected frames are not in opt_list this round." << std::endl;
-        }
-    }
+    append_with_budget(historical_candidates);
 
     // CUDA同步并记录视角选择耗时
     torch::cuda::synchronize();
@@ -3202,36 +2716,6 @@ double optimize(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<Gaussia
         pc->t_end_ = std::chrono::steady_clock::now();
         pc->t_backward_ += std::chrono::duration_cast<std::chrono::duration<double>>(pc->t_end_ - pc->t_start_).count();
 
-        // 对“新生点”临时放大 xyz 梯度，等效于局部更高 position_lr（不影响老点）
-        if (pc->densify_newborn_pos_lr_scale_ > 1.0 &&
-            pc->newborn_steps_left_.defined() &&
-            pc->newborn_steps_left_.size(0) == pc->getXYZ().size(0))
-        {
-            torch::NoGradGuard no_grad;
-            auto xyz_grad = pc->xyz_.grad();
-            if (xyz_grad.defined()) {
-                auto newborn_mask = pc->newborn_steps_left_ > 0;
-                if (newborn_mask.any().item<bool>()) {
-                    xyz_grad.index_put_(
-                        {newborn_mask, torch::indexing::Slice()},
-                        xyz_grad.index({newborn_mask, torch::indexing::Slice()}) *
-                        static_cast<float>(pc->densify_newborn_pos_lr_scale_));
-                }
-            }
-        }
-
-        // === 致密化：累积梯度统计 ===
-        {
-            torch::NoGradGuard no_grad;
-            pc->addDensificationStats(
-                render_pkg.screenspace_points,
-                render_pkg.visibility_mask,
-                render_pkg.radii,
-                render_pkg.screenspace_points_local,
-                render_pkg.screenspace_points_mask
-            );
-        }
-
         // --- 参数更新 ---
         pc->t_start_ = std::chrono::steady_clock::now();
         auto visible = render_pkg.visibility_mask;  // 获取可见性掩码 (2DGS)
@@ -3249,76 +2733,8 @@ double optimize(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<Gaussia
             pc->exposure_optimizer_->zero_grad(true);
         }
 
-        // 仅对当前视角可见的新生点递减“放大计数”，保证是按有效训练次数衰减
-        if (pc->newborn_steps_left_.defined() && pc->newborn_steps_left_.size(0) == visible.size(0)) {
-            torch::NoGradGuard no_grad;
-            auto vis_mask = visible.to(torch::kBool);
-            auto active_mask = (pc->newborn_steps_left_ > 0) & vis_mask;
-            if (active_mask.any().item<bool>()) {
-                pc->newborn_steps_left_.index_put_(
-                    {active_mask},
-                    pc->newborn_steps_left_.index({active_mask}) - 1);
-            }
-        }
-
         // Update keyframe attributes
         pc->keyframe_train_times_[idx]++;
-        pc->keyframe_loss_[idx] = loss.item<double>();
-
-        // === 致密化控制（由全局选择器决定） ===
-        if (selected_densify_set.count(idx) > 0)
-        {
-            torch::NoGradGuard no_grad;
-            densify_executed++;
-            std::cout << "frame idx " << idx
-                      << " (trained " << pc->keyframe_train_times_[idx]
-                      << " times) is densifying" << std::endl;
-            pc->densifyAndPrune(
-                pc->densify_grad_threshold_,
-                pc->opacity_cull_threshold_,
-                pc->scene_extent_,
-                500,  // max_screen_size
-                viewpoint_cam
-            );
-            if (pc->extend_debug_) {
-                std::string debug_dir = pc->dataset_path_;
-                if (debug_dir.empty()) debug_dir = "/tmp";
-                debug_dir += "/extend_debug";
-                if (!fs::exists(debug_dir)) {
-                    fs::create_directories(debug_dir);
-                }
-                std::string this_dir = debug_dir + "/frame" + std::to_string(idx);
-                if (!fs::exists(this_dir)) {
-                    fs::create_directories(this_dir);
-                }
-
-                // 保存 rendered_image
-                torch::Tensor r_img_tensor = render_pkg.rendered_image.detach().cpu().permute({1, 2, 0}).contiguous();
-                r_img_tensor = r_img_tensor.mul(255).clamp(0, 255).to(torch::kU8);
-                cv::Mat r_mat(viewpoint_cam->image_height_, viewpoint_cam->image_width_, CV_8UC3, r_img_tensor.data_ptr<uint8_t>());
-                cv::cvtColor(r_mat, r_mat, cv::COLOR_RGB2BGR);
-                cv::imwrite(this_dir + "/" + viewpoint_cam->image_name_+ "/" + std::to_string(pc->keyframe_train_times_[idx]), r_mat);
-            }
-
-            pc->last_densify_round_[idx] = pc->optimize_round_;
-            pc->densify_selected_count_[idx] += 1;
-            // 关键：致密化后把共视邻域训练戳重置为“当前训练次数”
-            // 含义：下次该邻域再想致密化，必须先积累足够训练增量（train_gap）
-            const int covis_radius = std::max(0, pc->densify_covis_window_);
-            const int left = std::max(0, idx - covis_radius);
-            const int right = std::min(train_camera_num - 1, idx + covis_radius);
-            for (int j = left; j <= right; ++j) {
-                pc->neighbor_last_densify_train_stamp_[j] = pc->keyframe_train_times_[j];
-                pc->neighbor_last_densify_round_[j] = pc->optimize_round_;
-            }
-            for (auto it = pc->recent_densify_centers_.begin(); it != pc->recent_densify_centers_.end();) {
-                if (it->first == idx) it = pc->recent_densify_centers_.erase(it);
-                else ++it;
-            }
-            // 记录中心帧到 recent_densify_centers_，驱动后续几轮 P_boost
-            const int keep_rounds = std::max(1, pc->post_densify_boost_rounds_);
-            pc->recent_densify_centers_.emplace_back(idx, pc->optimize_round_ + keep_rounds - 1);
-        }
 
         // Pruning strategy
         if (pc->keyframe_train_times_[idx] % 5 == 0 && pc->if_prune_) {
@@ -3342,10 +2758,6 @@ double optimize(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<Gaussia
     }
 
     // 返回平均每个视角的可见高斯点数量
-    if (!selected_densify_list.empty()) {
-        std::cout << "[DensifySelect] selected=" << selected_densify_list.size()
-                  << ", executed=" << densify_executed << std::endl;
-    }
     if (opt_list.empty()) return 0.0;
     return updated_num / opt_list.size();
 }

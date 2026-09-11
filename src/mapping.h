@@ -90,7 +90,6 @@ public:
         lambda_normal = node["lambda_normal"].as<double>();
         alpha_threshold = node["alpha_threshold"].as<double>();
         slide_window_size = node["slide_window_size"].as<int>();
-        hiloss_threshold = node["hiloss_threshold"].as<double>();
         hiColorLoss_threshold = node["hiColorLoss_threshold"].as<double>();
         train_times_threshold = node["train_times_threshold"].as<int>();
         scale_ratio_threshold = node["scale_ratio_threshold"].as<double>();
@@ -170,27 +169,6 @@ public:
             node["pose_min_alpha_coverage_ratio"] ? node["pose_min_alpha_coverage_ratio"].as<double>() : 0.005;
         pose_alpha_erode_radius = node["pose_alpha_erode_radius"] ? node["pose_alpha_erode_radius"].as<int>() : 1;
 
-        // === 致密化参数（可选，缺失则使用默认值）===
-        densify_grad_threshold    = node["densify_grad_threshold"]    ? node["densify_grad_threshold"].as<double>()  : 0.0002;
-        percent_dense             = node["percent_dense"]             ? node["percent_dense"].as<double>()            : 0.01;
-        densify_from_train_times  = node["densify_from_train_times"]  ? node["densify_from_train_times"].as<int>()    : 5;
-        densification_interval    = node["densification_interval"]    ? node["densification_interval"].as<int>()      : 3;
-        densify_index_gap         = node["densify_index_gap"]         ? node["densify_index_gap"].as<int>()           : slide_window_size;
-        densify_max_per_round     = node["densify_max_per_round"]     ? node["densify_max_per_round"].as<int>()       : 1;
-        densify_covis_window      = node["densify_covis_window"]      ? node["densify_covis_window"].as<int>()        : slide_window_size;
-        densify_min_train_after_covis = node["densify_min_train_after_covis"] ? node["densify_min_train_after_covis"].as<int>() : densification_interval;
-        densify_train_gate_alpha  = node["densify_train_gate_alpha"]  ? node["densify_train_gate_alpha"].as<double>() : 0.5;
-        post_densify_window_radius= node["post_densify_window_radius"]? node["post_densify_window_radius"].as<int>()  : slide_window_size;
-        post_densify_boost_rounds = node["post_densify_boost_rounds"] ? node["post_densify_boost_rounds"].as<int>()   : 2;
-        post_densify_boost_budget = node["post_densify_boost_budget"] ? node["post_densify_boost_budget"].as<int>()   : std::min(100 / 3, 2 * slide_window_size + 1);
-        opacity_cull_threshold    = node["opacity_cull_threshold"]    ? node["opacity_cull_threshold"].as<double>()   : 0.005;
-        scene_extent              = node["scene_extent"]              ? node["scene_extent"].as<double>()              : 50.0;
-        densify_alpha             = node["densify_alpha"]             ? node["densify_alpha"].as<double>()             : 1.5;
-        densify_new_opacity_scale = node["densify_new_opacity_scale"] ? node["densify_new_opacity_scale"].as<double>() : 0.5;
-        densify_new_opacity_min   = node["densify_new_opacity_min"]   ? node["densify_new_opacity_min"].as<double>()   : 0.02;
-        densify_newborn_boost_steps = node["densify_newborn_boost_steps"] ? node["densify_newborn_boost_steps"].as<int>() : 20;
-        densify_newborn_pos_lr_scale = node["densify_newborn_pos_lr_scale"] ? node["densify_newborn_pos_lr_scale"].as<double>() : 2.0;
-
         // === 单帧训练过程可视化评估参数 ===
         enable_train_visual_eval =
             node["enable_train_visual_eval"] ? node["enable_train_visual_eval"].as<bool>() : false;
@@ -232,7 +210,6 @@ public:
     double lambda_normal;
     double alpha_threshold;
     int slide_window_size;
-    double hiloss_threshold;
     double hiColorLoss_threshold;
     int train_times_threshold;
     double scale_ratio_threshold;
@@ -308,27 +285,6 @@ public:
     double pose_rmse_increase_tolerance_ratio = 0.01;  // 候选位姿 RMSE 允许相对恶化比例
     double pose_min_alpha_coverage_ratio = 0.005;      // 执行位姿优化要求的最小 alpha 覆盖率
     int pose_alpha_erode_radius = 1;        // 对 alpha 掩码做腐蚀时的半径，去掉边界过渡带
-
-    // === 致密化参数 ===
-    double densify_grad_threshold;   // 梯度阈值，控制致密化触发
-    double percent_dense;            // scale 判断百分比阈值
-    int    densify_from_train_times; // 帧训练多少次后才开始致密化
-    int    densification_interval;   // 每隔多少次训练执行一次致密化
-    int    densify_index_gap;        // 同一轮被致密化帧的最小索引间隔
-    int    densify_max_per_round;    // 每轮最多致密化帧数
-    int    densify_covis_window;     // 共视邻域半径（索引近似）
-    int    densify_min_train_after_covis; // 邻域上次致密化后最小训练增量
-    double densify_train_gate_alpha; // 训练充分性软加权系数
-    int    post_densify_window_radius; // 致密化后窗口半径
-    int    post_densify_boost_rounds;  // 致密化后窗口优先保留轮数
-    int    post_densify_boost_budget;  // 每轮窗口优先预算
-    double opacity_cull_threshold;   // 不透明度裁剪阈值
-    double scene_extent;             // 场景范围（用于 scale 判断）
-    double densify_alpha;            // 致密化位移步长倍数 (α = densify_alpha * max_scale)
-    double densify_new_opacity_scale; // 致密化新增点透明度缩放系数
-    double densify_new_opacity_min;   // 致密化新增点最小透明度（避免立刻被裁）
-    int    densify_newborn_boost_steps; // 新增点位置梯度放大的持续可见训练次数
-    double densify_newborn_pos_lr_scale; // 新生期位置梯度放大倍数（等效局部更高 position_lr）
 
     // === 单帧训练过程可视化评估参数 ===
     bool enable_train_visual_eval = false;                 // 是否启用单帧训练过程评估
