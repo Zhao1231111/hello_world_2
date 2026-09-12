@@ -32,12 +32,15 @@
 #include <filesystem>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <Eigen/Geometry>
 #include <torch/script.h>
 #include <memory>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 #include "simple-knn/simple_knn.h"
 
 namespace fs = std::filesystem;
@@ -57,6 +60,62 @@ int parseFrameIdFromImageName(const std::string& image_name)
     } catch (const std::exception&) {
         return -1;
     }
+}
+
+// 将实验配置中的属性选择转换为集合。这里刻意只接受固定名称，避免拼写错误导致
+// 某个属性被静默地保留为 baseline，从而污染 Oracle 消融的解释。
+std::unordered_set<std::string> parseOracleReplayAttributes(const std::string& specification)
+{
+    static const std::unordered_set<std::string> kAllAttributes = {
+        "xyz", "sh_dc", "sh_rest", "opacity", "scaling", "rotation"};
+
+    if (specification == "all") return kAllAttributes;
+    if (specification == "none") return {};
+    if (specification.empty()) {
+        throw std::invalid_argument(
+            "oracle_replay_attributes must be all, none, or a comma-separated attribute list");
+    }
+
+    std::unordered_set<std::string> selected;
+    std::istringstream stream(specification);
+    std::string attribute;
+    while (std::getline(stream, attribute, ',')) {
+        const size_t begin = attribute.find_first_not_of(" \t");
+        const size_t end = attribute.find_last_not_of(" \t");
+        if (begin == std::string::npos) {
+            throw std::invalid_argument(
+                "oracle_replay_attributes contains an empty attribute name");
+        }
+        attribute = attribute.substr(begin, end - begin + 1);
+        if (kAllAttributes.count(attribute) == 0) {
+            throw std::invalid_argument(
+                "oracle_replay_attributes contains unsupported attribute: " + attribute);
+        }
+        if (!selected.insert(attribute).second) {
+            throw std::invalid_argument(
+                "oracle_replay_attributes contains duplicate attribute: " + attribute);
+        }
+    }
+    return selected;
+}
+
+// 多 K capture 使用一个可读的路径模板，避免在 YAML 中手工维护
+// “插入帧数 × K 数量”个易错路径。两个占位符都必须出现，保证每个快照有唯一文件名。
+std::string expandOracleArtifactPath(
+    std::string path_template, int frame_id, int teacher_budget)
+{
+    const auto replace_all = [](std::string& value,
+                                const std::string& token,
+                                const std::string& replacement) {
+        size_t position = 0;
+        while ((position = value.find(token, position)) != std::string::npos) {
+            value.replace(position, token.size(), replacement);
+            position += replacement.size();
+        }
+    };
+    replace_all(path_template, "{frame}", std::to_string(frame_id));
+    replace_all(path_template, "{budget}", std::to_string(teacher_budget));
+    return path_template;
 }
 
 std::string getImageStem(const std::string& image_name)
@@ -313,6 +372,220 @@ struct VisualQualityEvalResult
     double mean_blind_psnr = std::numeric_limits<double>::quiet_NaN();
     double mean_blind_alpha_coverage = std::numeric_limits<double>::quiet_NaN();
 };
+
+// Oracle teacher artifact 中各张量的固定顺序。schema version 改变时必须同步更新
+// capture、replay 和离线分析脚本，避免旧参数包被静默误读。
+constexpr int64_t kOracleTeacherSchemaVersion = 1;
+enum OracleTeacherTensorIndex : size_t
+{
+    kOracleSchema = 0,
+    kOracleMetadata,
+    kOracleSourceLocalIndices,
+    kOracleSourceGlobalIds,
+    kOracleOptimizationCounts,
+    kOraclePreInsertionFingerprint,
+    kOracleInitialXyz,
+    kOracleTargetCameraPose,
+    kOracleTeacherXyz,
+    kOracleTeacherFeaturesDc,
+    kOracleTeacherFeaturesRest,
+    kOracleTeacherOpacity,
+    kOracleTeacherScaling,
+    kOracleTeacherRotation,
+    kOracleTensorCount
+};
+
+void appendTensorFingerprint(std::vector<double>& values, const torch::Tensor& tensor)
+{
+    if (!tensor.defined() || tensor.numel() == 0) {
+        values.insert(values.end(), {0.0, 0.0, 0.0});
+        return;
+    }
+
+    auto flat = tensor.detach().to(torch::kCPU).to(torch::kFloat64).reshape({-1});
+    values.push_back(flat.mean().item<double>());
+    values.push_back(flat.square().mean().item<double>());
+    values.push_back(flat.abs().max().item<double>());
+}
+
+torch::Tensor buildOraclePreInsertionFingerprint(GaussianModel* pc)
+{
+    std::vector<double> values;
+    values.reserve(64);
+    values.push_back(static_cast<double>(pc->getXYZ().size(0)));
+    values.push_back(static_cast<double>(pc->max_id_));
+
+    appendTensorFingerprint(values, pc->xyz_);
+    appendTensorFingerprint(values, pc->features_dc_);
+    appendTensorFingerprint(values, pc->features_rest_);
+    appendTensorFingerprint(values, pc->opacity_);
+    appendTensorFingerprint(values, pc->scaling_);
+    appendTensorFingerprint(values, pc->rotation_);
+    appendTensorFingerprint(values, pc->exposure_);
+    appendTensorFingerprint(values, pc->global_ids_);
+
+    // 两次重放只有参数相同还不够；旧 Gaussian 的 Adam 动量也会影响回插后的轨迹。
+    // 这里记录每个参数组的 step 与一、二阶动量统计，用于在目标插入前拒绝不一致的重放。
+    if (pc->sparse_optimizer_) {
+        auto& optimizer_state = pc->sparse_optimizer_->get_state();
+        for (auto& group : pc->sparse_optimizer_->param_groups()) {
+            auto& param = group.params().front();
+            auto state_it = optimizer_state.find(param.unsafeGetTensorImpl());
+            if (state_it == optimizer_state.end() || !state_it->second.initialized) {
+                values.push_back(0.0);
+                values.insert(values.end(), {0.0, 0.0, 0.0, 0.0, 0.0, 0.0});
+                continue;
+            }
+            values.push_back(static_cast<double>(state_it->second.step));
+            appendTensorFingerprint(values, state_it->second.exp_avg);
+            appendTensorFingerprint(values, state_it->second.exp_avg_sq);
+        }
+    }
+
+    return torch::tensor(values, torch::TensorOptions().dtype(torch::kFloat64));
+}
+
+torch::Tensor buildOracleCameraPose(const std::shared_ptr<Camera>& camera)
+{
+    auto pose = torch::empty({12}, torch::TensorOptions().dtype(torch::kFloat64));
+    auto accessor = pose.accessor<double, 1>();
+    int offset = 0;
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            accessor[offset++] = camera->R_cw_(row, col);
+        }
+    }
+    for (int row = 0; row < 3; ++row) {
+        accessor[offset++] = camera->t_cw_(row);
+    }
+    return pose;
+}
+
+void requireOracleTensorClose(const torch::Tensor& actual,
+                              const torch::Tensor& expected,
+                              const std::string& label,
+                              double absolute_tolerance,
+                              double relative_tolerance)
+{
+    if (!actual.defined() || !expected.defined() || actual.sizes() != expected.sizes()) {
+        throw std::runtime_error("[OracleTeacher] " + label + " shape mismatch");
+    }
+    if (actual.numel() == 0) return;
+
+    auto actual_cpu = actual.detach().to(torch::kCPU).to(torch::kFloat64);
+    auto expected_cpu = expected.detach().to(torch::kCPU).to(torch::kFloat64);
+    auto allowed = absolute_tolerance + relative_tolerance * expected_cpu.abs();
+    auto violation = (actual_cpu - expected_cpu).abs() > allowed;
+    if (violation.any().item<bool>()) {
+        const double max_error = (actual_cpu - expected_cpu).abs().max().item<double>();
+        throw std::runtime_error(
+            "[OracleTeacher] " + label + " mismatch, max_abs_error=" + std::to_string(max_error));
+    }
+}
+
+// Oracle capture 与 replay 的候选点都来自同一份前端 bag，但旧地图的轻微数值分叉会使
+// alpha/error mask 在阈值附近多选或少选少量点。这里按“插入前的三维位置”做一对一
+// 匹配，而不再要求两个 batch 的长度和顺序完全相同。
+struct OraclePointCell
+{
+    int64_t x;
+    int64_t y;
+    int64_t z;
+
+    bool operator==(const OraclePointCell& other) const
+    {
+        return x == other.x && y == other.y && z == other.z;
+    }
+};
+
+struct OraclePointCellHash
+{
+    size_t operator()(const OraclePointCell& cell) const
+    {
+        size_t seed = std::hash<int64_t>{}(cell.x);
+        seed ^= std::hash<int64_t>{}(cell.y) + 0x9e3779b9U + (seed << 6) + (seed >> 2);
+        seed ^= std::hash<int64_t>{}(cell.z) + 0x9e3779b9U + (seed << 6) + (seed >> 2);
+        return seed;
+    }
+};
+
+std::vector<int64_t> matchOracleInitialPoints(
+    const torch::Tensor& artifact_initial_xyz,
+    const torch::Tensor& replay_initial_xyz,
+    double tolerance)
+{
+    if (!artifact_initial_xyz.defined() || !replay_initial_xyz.defined() ||
+        artifact_initial_xyz.dim() != 2 || replay_initial_xyz.dim() != 2 ||
+        artifact_initial_xyz.size(1) != 3 || replay_initial_xyz.size(1) != 3) {
+        throw std::runtime_error("[OracleTeacher] initial xyz must have shape [N, 3]");
+    }
+    if (!(tolerance > 0.0)) {
+        throw std::runtime_error("[OracleTeacher] position match tolerance must be positive");
+    }
+
+    auto artifact_cpu = artifact_initial_xyz.detach().to(torch::kCPU).to(torch::kFloat64).contiguous();
+    auto replay_cpu = replay_initial_xyz.detach().to(torch::kCPU).to(torch::kFloat64).contiguous();
+    auto artifact_accessor = artifact_cpu.accessor<double, 2>();
+    auto replay_accessor = replay_cpu.accessor<double, 2>();
+
+    auto make_cell = [tolerance](double x, double y, double z) {
+        return OraclePointCell{
+            static_cast<int64_t>(std::floor(x / tolerance)),
+            static_cast<int64_t>(std::floor(y / tolerance)),
+            static_cast<int64_t>(std::floor(z / tolerance))};
+    };
+
+    std::unordered_map<OraclePointCell, std::vector<int64_t>, OraclePointCellHash> replay_cells;
+    replay_cells.reserve(static_cast<size_t>(replay_cpu.size(0)) * 2U);
+    for (int64_t replay_index = 0; replay_index < replay_cpu.size(0); ++replay_index) {
+        replay_cells[make_cell(
+            replay_accessor[replay_index][0],
+            replay_accessor[replay_index][1],
+            replay_accessor[replay_index][2])].push_back(replay_index);
+    }
+
+    std::vector<bool> replay_used(static_cast<size_t>(replay_cpu.size(0)), false);
+    std::vector<int64_t> artifact_to_replay(static_cast<size_t>(artifact_cpu.size(0)), -1);
+    const double max_distance_squared = tolerance * tolerance;
+
+    for (int64_t artifact_index = 0; artifact_index < artifact_cpu.size(0); ++artifact_index) {
+        const double ax = artifact_accessor[artifact_index][0];
+        const double ay = artifact_accessor[artifact_index][1];
+        const double az = artifact_accessor[artifact_index][2];
+        const auto center = make_cell(ax, ay, az);
+        int64_t best_replay_index = -1;
+        double best_distance_squared = max_distance_squared;
+
+        // floor 量化会让容差内的点落入相邻 cell，因此必须检查周围 3x3x3 个 cell。
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dz = -1; dz <= 1; ++dz) {
+                    const OraclePointCell neighbor{center.x + dx, center.y + dy, center.z + dz};
+                    const auto bucket_it = replay_cells.find(neighbor);
+                    if (bucket_it == replay_cells.end()) continue;
+                    for (const int64_t replay_index : bucket_it->second) {
+                        if (replay_used[static_cast<size_t>(replay_index)]) continue;
+                        const double rx = replay_accessor[replay_index][0];
+                        const double ry = replay_accessor[replay_index][1];
+                        const double rz = replay_accessor[replay_index][2];
+                        const double distance_squared =
+                            (ax - rx) * (ax - rx) + (ay - ry) * (ay - ry) + (az - rz) * (az - rz);
+                        if (distance_squared <= best_distance_squared) {
+                            best_distance_squared = distance_squared;
+                            best_replay_index = replay_index;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (best_replay_index >= 0) {
+            artifact_to_replay[static_cast<size_t>(artifact_index)] = best_replay_index;
+            replay_used[static_cast<size_t>(best_replay_index)] = true;
+        }
+    }
+    return artifact_to_replay;
+}
 
 double computeMeanOrNaN(double sum, size_t count)
 {
@@ -650,6 +923,162 @@ GaussianModel::GaussianModel(const Params& prm)
     train_visual_eval_every_k_train_times_ = prm.train_visual_eval_every_k_train_times;
     train_visual_eval_frame_ids_ = prm.train_visual_eval_frame_ids;
     train_visual_eval_output_dir_ = prm.train_visual_eval_output_dir;
+
+    oracle_teacher_mode_ = prm.oracle_teacher_mode;
+    oracle_neighbor_radius_ = prm.oracle_neighbor_radius;
+    oracle_eval_interval_ = prm.oracle_eval_interval;
+    oracle_replay_attributes_ = prm.oracle_replay_attributes;
+
+    // 未提供列表时保留单点实验配置的含义；多点实验按 frame id 建立独立事件。
+    std::vector<int> oracle_target_frames = prm.oracle_target_frame_ids;
+    std::vector<std::string> oracle_artifact_paths = prm.oracle_artifact_paths;
+    if (oracle_target_frames.empty() && prm.oracle_target_frame_id >= 0) {
+        oracle_target_frames.push_back(prm.oracle_target_frame_id);
+        if (!prm.oracle_artifact_path.empty()) {
+            oracle_artifact_paths.push_back(prm.oracle_artifact_path);
+        }
+    }
+
+    const bool oracle_enabled = oracle_teacher_mode_ != "off";
+    if (oracle_teacher_mode_ != "off" &&
+        oracle_teacher_mode_ != "capture" &&
+        oracle_teacher_mode_ != "replay") {
+        throw std::invalid_argument(
+            "oracle_teacher_mode must be one of: off, capture, replay");
+    }
+    if (oracle_enabled) {
+        if (oracle_target_frames.empty() || oracle_neighbor_radius_ < 0 ||
+            oracle_eval_interval_ <= 0) {
+            throw std::invalid_argument(
+                "Oracle teacher experiment requires target frames, non-negative neighbor radius "
+                "and positive eval interval");
+        }
+
+        // capture 接受 K 集合并在同一条轨迹上依次保存。replay 必须明确选择唯一 K；
+        // 若未使用新字段，则回退到旧标量，保证已有单 K 配置仍可运行。
+        if (oracle_teacher_mode_ == "capture") {
+            oracle_teacher_budgets_ = prm.oracle_teacher_budgets;
+            if (oracle_teacher_budgets_.empty() && prm.oracle_teacher_budget > 0) {
+                oracle_teacher_budgets_.push_back(prm.oracle_teacher_budget);
+            }
+            std::sort(oracle_teacher_budgets_.begin(), oracle_teacher_budgets_.end());
+            if (oracle_teacher_budgets_.empty() || oracle_teacher_budgets_.front() <= 0 ||
+                std::adjacent_find(
+                    oracle_teacher_budgets_.begin(), oracle_teacher_budgets_.end()) !=
+                    oracle_teacher_budgets_.end()) {
+                throw std::invalid_argument(
+                    "oracle_teacher_budgets must contain unique positive integers");
+            }
+        } else {
+            oracle_teacher_budget_ =
+                prm.oracle_replay_budget > 0 ? prm.oracle_replay_budget : prm.oracle_teacher_budget;
+            if (oracle_teacher_budget_ <= 0) {
+                throw std::invalid_argument(
+                    "Oracle teacher replay requires positive oracle_replay_budget "
+                    "(or legacy oracle_teacher_budget)");
+            }
+            oracle_teacher_budgets_ = {oracle_teacher_budget_};
+        }
+
+        const bool use_artifact_template = !prm.oracle_artifact_path_template.empty();
+        if (use_artifact_template) {
+            if (!oracle_artifact_paths.empty() || !prm.oracle_artifact_path.empty()) {
+                throw std::invalid_argument(
+                    "Do not combine oracle_artifact_path_template with explicit artifact paths");
+            }
+            if (prm.oracle_artifact_path_template.find("{frame}") == std::string::npos ||
+                prm.oracle_artifact_path_template.find("{budget}") == std::string::npos) {
+                throw std::invalid_argument(
+                    "oracle_artifact_path_template must contain {frame} and {budget}");
+            }
+        } else {
+            if (oracle_target_frames.size() != oracle_artifact_paths.size() ||
+                std::any_of(oracle_artifact_paths.begin(), oracle_artifact_paths.end(),
+                            [](const std::string& path) { return path.empty(); })) {
+                throw std::invalid_argument(
+                    "Oracle teacher explicit artifact paths must match target frames");
+            }
+            if (oracle_teacher_mode_ == "capture" && oracle_teacher_budgets_.size() != 1) {
+                throw std::invalid_argument(
+                    "Multi-budget capture requires oracle_artifact_path_template");
+            }
+        }
+
+        int previous_frame_id = -1;
+        std::unordered_set<std::string> unique_artifact_paths;
+        for (size_t i = 0; i < oracle_target_frames.size(); ++i) {
+            if (oracle_target_frames[i] < 0 ||
+                (i > 0 && oracle_target_frames[i] <= previous_frame_id)) {
+                throw std::invalid_argument(
+                    "oracle_target_frame_ids must be non-negative and strictly increasing");
+            }
+            previous_frame_id = oracle_target_frames[i];
+
+            OracleTeacherEvent event;
+            event.target_frame_id = oracle_target_frames[i];
+            if (oracle_teacher_mode_ == "capture") {
+                for (const int budget : oracle_teacher_budgets_) {
+                    const std::string artifact_path = use_artifact_template
+                        ? expandOracleArtifactPath(
+                              prm.oracle_artifact_path_template, event.target_frame_id, budget)
+                        : oracle_artifact_paths[i];
+                    if (!unique_artifact_paths.insert(artifact_path).second) {
+                        throw std::invalid_argument(
+                            "Oracle teacher artifact path is not unique: " + artifact_path);
+                    }
+                    event.snapshots.push_back({budget, artifact_path, false});
+                }
+            } else {
+                event.artifact_path = use_artifact_template
+                    ? expandOracleArtifactPath(
+                          prm.oracle_artifact_path_template,
+                          event.target_frame_id,
+                          oracle_teacher_budget_)
+                    : oracle_artifact_paths[i];
+                if (!unique_artifact_paths.insert(event.artifact_path).second) {
+                    throw std::invalid_argument(
+                        "Oracle teacher artifact path is not unique: " + event.artifact_path);
+                }
+            }
+            oracle_events_.push_back(std::move(event));
+        }
+        if (generate_dataset_ || use_Gaussian_regress_) {
+            throw std::invalid_argument(
+                "Oracle teacher experiment must run in baseline mode: "
+                "generate_dataset=false and use_Gaussian_regress=false");
+        }
+        for (const auto& event : oracle_events_) {
+            if (oracle_teacher_mode_ == "capture") {
+                for (const auto& snapshot : event.snapshots) {
+                    if (fs::exists(snapshot.artifact_path)) {
+                        throw std::runtime_error(
+                            "Oracle teacher capture refuses to overwrite artifact: " +
+                            snapshot.artifact_path);
+                    }
+                }
+            } else if (!fs::exists(event.artifact_path)) {
+                throw std::runtime_error(
+                    "Oracle teacher replay artifact does not exist: " + event.artifact_path);
+            }
+        }
+        // 在构造期验证属性清单，确保错误在处理第一帧之前就暴露。
+        if (oracle_teacher_mode_ == "replay") {
+            (void)parseOracleReplayAttributes(oracle_replay_attributes_);
+        }
+        std::cout << "[OracleTeacher] mode=" << oracle_teacher_mode_
+                  << ", target_frame_ids=";
+        for (size_t i = 0; i < oracle_events_.size(); ++i) {
+            std::cout << (i == 0 ? "[" : ",") << oracle_events_[i].target_frame_id;
+        }
+        std::cout << "]" << ", teacher_budgets=[";
+        for (size_t i = 0; i < oracle_teacher_budgets_.size(); ++i) {
+            std::cout << (i == 0 ? "" : ",") << oracle_teacher_budgets_[i];
+        }
+        std::cout << "]"
+                  << ", neighbor_radius=" << oracle_neighbor_radius_
+                  << ", eval_interval=" << oracle_eval_interval_
+                  << ", replay_attributes=" << oracle_replay_attributes_ << std::endl;
+    }
     
     auto device_type = torch::kCUDA;
     GAUSSIAN_MODEL_INIT_TENSORS(device_type)
@@ -746,6 +1175,437 @@ torch::Tensor GaussianModel::getOpacity()
 torch::Tensor GaussianModel::getExposure()
 {
     return exposure_;
+}
+
+void GaussianModel::prepareOracleTeacherInsertion(
+    const std::shared_ptr<Dataset>& dataset,
+    const std::shared_ptr<Camera>& camera,
+    torch::Tensor& new_xyz,
+    torch::Tensor& new_features_dc,
+    torch::Tensor& new_features_rest,
+    torch::Tensor& new_opacities,
+    torch::Tensor& new_scaling,
+    torch::Tensor& new_rotation)
+{
+    if (oracle_teacher_mode_ == "off") return;
+
+    const int frame_id = parseFrameIdFromImageName(camera->image_name_);
+    auto event_it = std::find_if(
+        oracle_events_.begin(), oracle_events_.end(),
+        [frame_id](const OracleTeacherEvent& event) { return event.target_frame_id == frame_id; });
+    if (event_it == oracle_events_.end()) return;
+    OracleTeacherEvent& event = *event_it;
+    if (event.inserted) {
+        throw std::runtime_error(
+            "[OracleTeacher] target frame was inserted more than once: " + std::to_string(frame_id));
+    }
+    if (new_xyz.size(0) <= 0) {
+        throw std::runtime_error("[OracleTeacher] target insertion produced no Gaussian candidates");
+    }
+
+    event.target_keyframe_index = static_cast<int>(dataset->train_cameras_.size()) - 1;
+    event.target_insert_global_update = oracle_global_update_count_;
+    event.pre_insertion_fingerprint = buildOraclePreInsertionFingerprint(this);
+    event.target_camera_pose = buildOracleCameraPose(camera);
+    // 多个插入邻域取并集。未来关键帧尚未到达时保留其索引，待相机数据到达后自动加入评估。
+    const int begin_index = std::max(0, event.target_keyframe_index - oracle_neighbor_radius_);
+    const int end_index = event.target_keyframe_index + oracle_neighbor_radius_;
+    for (int index = begin_index; index <= end_index; ++index) {
+        oracle_check_keyframe_indices_.insert(index);
+    }
+    if (oracle_first_insert_global_update_ < 0) {
+        oracle_first_insert_global_update_ = event.target_insert_global_update;
+    }
+
+    if (oracle_teacher_mode_ == "capture") {
+        event.target_start_id = max_id_;
+        event.target_original_count = new_xyz.size(0);
+        event.optimization_counts = torch::zeros(
+            {event.target_original_count}, torch::TensorOptions().dtype(torch::kInt64));
+        event.initial_xyz = new_xyz.detach().to(torch::kCPU).contiguous();
+        event.inserted = true;
+
+        std::cout << "[OracleTeacher] capture target inserted: frame_id=" << frame_id
+                  << ", keyframe_index=" << event.target_keyframe_index
+                  << ", G_t=" << event.target_insert_global_update
+                  << ", original_count=" << event.target_original_count
+                  << ", start_id=" << event.target_start_id << std::endl;
+        return;
+    }
+
+    std::vector<torch::Tensor> artifact;
+    torch::load(artifact, event.artifact_path);
+    if (artifact.size() != kOracleTensorCount) {
+        throw std::runtime_error("[OracleTeacher] unexpected artifact tensor count");
+    }
+    const auto schema = artifact[kOracleSchema].to(torch::kCPU).to(torch::kInt64).reshape({-1});
+    if (schema.numel() != 1 || schema.item<int64_t>() != kOracleTeacherSchemaVersion) {
+        throw std::runtime_error("[OracleTeacher] unsupported artifact schema version");
+    }
+
+    const auto metadata = artifact[kOracleMetadata].to(torch::kCPU).to(torch::kInt64).reshape({-1});
+    if (metadata.numel() != 7) {
+        throw std::runtime_error("[OracleTeacher] malformed artifact metadata");
+    }
+    auto meta = metadata.accessor<int64_t, 1>();
+    const int64_t artifact_target_frame = meta[0];
+    const int64_t artifact_keyframe_index = meta[1];
+    const int64_t artifact_budget = meta[2];
+    const int64_t artifact_G_t = meta[3];
+    const int64_t artifact_original_count = meta[5];
+    const int64_t artifact_start_id = meta[6];
+
+    // frame/keyframe/budget 决定 artifact 的实验身份，错了说明拿错了 teacher，必须拒绝。
+    // G_t、batch 数和 start_id 则可能因同一输入上的后端数值分叉而略有差异；这些差异
+    // 只记录，不再阻止后续按三维位置做局部匹配。
+    if (artifact_target_frame != event.target_frame_id ||
+        artifact_keyframe_index != event.target_keyframe_index ||
+        artifact_budget != oracle_teacher_budget_) {
+        throw std::runtime_error(
+            "[OracleTeacher] replay identity mismatch: "
+            "target_frame artifact/current=" + std::to_string(artifact_target_frame) + "/" +
+                std::to_string(event.target_frame_id) +
+            ", keyframe_index=" + std::to_string(artifact_keyframe_index) + "/" +
+                std::to_string(event.target_keyframe_index) +
+            ", budget=" + std::to_string(artifact_budget) + "/" +
+                std::to_string(oracle_teacher_budget_));
+    }
+    if (artifact_G_t != event.target_insert_global_update ||
+        artifact_original_count != new_xyz.size(0) || artifact_start_id != max_id_) {
+        std::cout << "[OracleTeacher] replay trajectory differs before target: "
+                  << "G_t artifact/current=" << artifact_G_t << "/"
+                  << event.target_insert_global_update
+                  << ", original_count=" << artifact_original_count << "/" << new_xyz.size(0)
+                  << ", start_id=" << artifact_start_id << "/" << max_id_ << std::endl;
+    }
+
+    // 前端 bag 相同意味着目标相机应当相同；相机不一致时，三维位置近邻不再能证明
+    // 两个点来自同一 insertion candidate，因此这一项仍保持严格检查。
+    requireOracleTensorClose(
+        event.target_camera_pose, artifact[kOracleTargetCameraPose],
+        "target camera pose", 1e-10, 1e-8);
+
+    const auto artifact_initial_xyz = artifact[kOracleInitialXyz]
+        .detach().to(torch::kCPU).contiguous();
+    if (artifact_initial_xyz.dim() != 2 || artifact_initial_xyz.size(1) != 3 ||
+        artifact_initial_xyz.size(0) != artifact_original_count) {
+        throw std::runtime_error("[OracleTeacher] artifact initial xyz shape mismatch");
+    }
+    constexpr double kPositionMatchTolerance = 1e-4;
+    const auto artifact_to_replay = matchOracleInitialPoints(
+        artifact_initial_xyz, new_xyz, kPositionMatchTolerance);
+
+    auto local_indices = artifact[kOracleSourceLocalIndices]
+        .to(torch::kCPU).to(torch::kInt64).reshape({-1}).contiguous();
+    std::unordered_set<int64_t> unique_local_indices;
+    auto local_index_accessor = local_indices.accessor<int64_t, 1>();
+    for (int64_t i = 0; i < local_indices.numel(); ++i) {
+        unique_local_indices.insert(local_index_accessor[i]);
+    }
+    if (local_indices.numel() <= 0 ||
+        local_indices.min().item<int64_t>() < 0 ||
+        local_indices.max().item<int64_t>() >= artifact_original_count ||
+        static_cast<int64_t>(unique_local_indices.size()) != local_indices.numel()) {
+        throw std::runtime_error("[OracleTeacher] invalid survivor local indices");
+    }
+
+    const int64_t survivor_count = local_indices.numel();
+    const std::vector<size_t> parameter_indices = {
+        kOracleTeacherXyz, kOracleTeacherFeaturesDc, kOracleTeacherFeaturesRest,
+        kOracleTeacherOpacity, kOracleTeacherScaling, kOracleTeacherRotation};
+    for (size_t tensor_index : parameter_indices) {
+        if (!artifact[tensor_index].defined() || artifact[tensor_index].size(0) != survivor_count) {
+            throw std::runtime_error("[OracleTeacher] teacher parameter shape mismatch");
+        }
+    }
+
+    std::vector<int64_t> replay_indices;
+    std::vector<int64_t> teacher_rows;
+    replay_indices.reserve(static_cast<size_t>(survivor_count));
+    teacher_rows.reserve(static_cast<size_t>(survivor_count));
+    for (int64_t teacher_row = 0; teacher_row < survivor_count; ++teacher_row) {
+        const int64_t artifact_local_index = local_index_accessor[teacher_row];
+        const int64_t replay_index = artifact_to_replay[static_cast<size_t>(artifact_local_index)];
+        if (replay_index >= 0) {
+            replay_indices.push_back(replay_index);
+            teacher_rows.push_back(teacher_row);
+        }
+    }
+    if (replay_indices.empty()) {
+        throw std::runtime_error("[OracleTeacher] no teacher points match the replay insertion batch");
+    }
+
+    // 以 replay 自己的 baseline 初始化张量为底，只覆盖一对一匹配成功的行。这样 replay
+    // 独有点继续使用规则初始化，capture 独有点不会被凭空插入；batch 长度和当前 ID 语义
+    // 均保持为本次 replay 的实际结果。
+    auto replay_index_tensor_cpu = torch::tensor(
+        replay_indices, torch::TensorOptions().dtype(torch::kInt64));
+    auto teacher_row_tensor_cpu = torch::tensor(
+        teacher_rows, torch::TensorOptions().dtype(torch::kInt64));
+    const auto replay_attributes = parseOracleReplayAttributes(oracle_replay_attributes_);
+    auto apply_matched_teacher_rows = [&](const char* attribute_name,
+                                          torch::Tensor& replay_parameter,
+                                          size_t artifact_index) {
+        // 未选属性不触碰 replay_parameter：它在进入本函数时仍是这次 replay 的
+        // rule-based baseline 初始化。这保证 leave-one-out 只改变一个因素。
+        if (replay_attributes.count(attribute_name) == 0) return;
+        auto replay_index_tensor = replay_index_tensor_cpu.to(replay_parameter.device());
+        auto teacher_row_tensor = teacher_row_tensor_cpu.to(replay_parameter.device());
+        auto teacher_parameter = artifact[artifact_index].to(replay_parameter.device());
+        replay_parameter.index_copy_(
+            0, replay_index_tensor, teacher_parameter.index_select(0, teacher_row_tensor));
+    };
+
+    const auto replay_initial_xyz = new_xyz.detach().to(torch::kCPU).contiguous();
+    apply_matched_teacher_rows("xyz", new_xyz, kOracleTeacherXyz);
+    apply_matched_teacher_rows("sh_dc", new_features_dc, kOracleTeacherFeaturesDc);
+    apply_matched_teacher_rows("sh_rest", new_features_rest, kOracleTeacherFeaturesRest);
+    apply_matched_teacher_rows("opacity", new_opacities, kOracleTeacherOpacity);
+    apply_matched_teacher_rows("scaling", new_scaling, kOracleTeacherScaling);
+    apply_matched_teacher_rows("rotation", new_rotation, kOracleTeacherRotation);
+
+    const int64_t replay_count = new_xyz.size(0);
+    const int64_t matched_teacher_count = static_cast<int64_t>(replay_indices.size());
+    event.target_original_count = replay_count;
+    event.target_start_id = max_id_;
+    event.initial_xyz = replay_initial_xyz;
+    event.inserted = true;
+    event.replay_applied = true;
+
+    std::cout << "[OracleTeacher] replay applied: frame_id=" << frame_id
+              << ", teacher_budget=" << oracle_teacher_budget_
+              << ", keyframe_index=" << event.target_keyframe_index
+              << ", G_t=" << event.target_insert_global_update
+              << ", replay_count=" << replay_count
+              << ", teacher_survivor_count=" << survivor_count
+              << ", matched_teacher_count=" << matched_teacher_count
+              << ", baseline_fallback_count=" << (replay_count - matched_teacher_count)
+              << ", unmatched_teacher_count=" << (survivor_count - matched_teacher_count)
+              << ", replay_attributes=" << oracle_replay_attributes_
+              << ", artifact=" << event.artifact_path
+              << ", position_tolerance=" << kPositionMatchTolerance << std::endl;
+}
+
+void GaussianModel::afterOracleTeacherOptimizerStep(
+    const std::shared_ptr<Dataset>& dataset,
+    const torch::Tensor& visibility)
+{
+    if (oracle_teacher_mode_ == "off") return;
+
+    oracle_global_update_count_ += 1;
+
+    if (oracle_teacher_mode_ == "capture") {
+        torch::NoGradGuard no_grad;
+        auto ids = global_ids_.flatten();
+        for (auto& event : oracle_events_) {
+            // 每批点有独立、固定分母的计数器。同一批点的计数会持续到最大 K，已经保存的
+            // 小 K 快照不会阻止后续 K 继续累计；全部 K 保存后才停止更新该批计数器。
+            const bool all_snapshots_saved = std::all_of(
+                event.snapshots.begin(), event.snapshots.end(),
+                [](const OracleTeacherSnapshot& snapshot) { return snapshot.saved; });
+            if (!event.inserted || all_snapshots_saved) continue;
+            auto target_mask = (ids >= event.target_start_id) &
+                               (ids < event.target_start_id + event.target_original_count);
+            if (target_mask.any().item<bool>()) {
+                auto local_indices = (ids.index({target_mask}) - event.target_start_id)
+                    .to(torch::kCPU).to(torch::kInt64).contiguous();
+                auto increments = visibility.index({target_mask})
+                    .to(torch::kCPU).to(torch::kInt64).contiguous();
+                event.optimization_counts.index_add_(0, local_indices, increments);
+            }
+
+            const double mean_count = event.optimization_counts.sum().item<double>() /
+                                      static_cast<double>(event.target_original_count);
+            const bool reached_new_budget = std::any_of(
+                event.snapshots.begin(), event.snapshots.end(),
+                [mean_count](const OracleTeacherSnapshot& snapshot) {
+                    return !snapshot.saved && mean_count >= static_cast<double>(snapshot.budget);
+                });
+            if (!reached_new_budget) continue;
+
+            auto survivor_mask = (ids >= event.target_start_id) &
+                                 (ids < event.target_start_id + event.target_original_count);
+            auto survivor_global_ids = ids.index({survivor_mask}).detach().to(torch::kCPU).to(torch::kInt64);
+            auto survivor_local_indices =
+                (survivor_global_ids - event.target_start_id).to(torch::kInt64).contiguous();
+            if (survivor_global_ids.numel() <= 0) {
+                throw std::runtime_error(
+                    "[OracleTeacher] all target Gaussians were pruned before reaching the budget: frame " +
+                    std::to_string(event.target_frame_id));
+            }
+
+            // 一次 optimizer step 可能同时跨过多个相邻 K。此时它们都对应这个离散更新后的
+            // 同一地图状态，但 artifact metadata 中仍分别记录各自的目标 K。
+            for (auto& snapshot : event.snapshots) {
+                if (snapshot.saved || mean_count < static_cast<double>(snapshot.budget)) continue;
+
+                auto metadata = torch::tensor(
+                    {static_cast<int64_t>(event.target_frame_id),
+                     static_cast<int64_t>(event.target_keyframe_index),
+                     static_cast<int64_t>(snapshot.budget),
+                     event.target_insert_global_update,
+                     oracle_global_update_count_,
+                     event.target_original_count,
+                     event.target_start_id},
+                    torch::TensorOptions().dtype(torch::kInt64));
+
+                std::vector<torch::Tensor> artifact = {
+                    torch::tensor({kOracleTeacherSchemaVersion}, torch::TensorOptions().dtype(torch::kInt64)),
+                    metadata,
+                    survivor_local_indices,
+                    survivor_global_ids.contiguous(),
+                    event.optimization_counts.clone(),
+                    event.pre_insertion_fingerprint.clone(),
+                    event.initial_xyz.clone(),
+                    event.target_camera_pose.clone(),
+                    xyz_.index({survivor_mask}).detach().to(torch::kCPU).contiguous(),
+                    features_dc_.index({survivor_mask}).detach().to(torch::kCPU).contiguous(),
+                    features_rest_.index({survivor_mask}).detach().to(torch::kCPU).contiguous(),
+                    opacity_.index({survivor_mask}).detach().to(torch::kCPU).contiguous(),
+                    scaling_.index({survivor_mask}).detach().to(torch::kCPU).contiguous(),
+                    rotation_.index({survivor_mask}).detach().to(torch::kCPU).contiguous()
+                };
+
+                const fs::path artifact_path(snapshot.artifact_path);
+                if (artifact_path.has_parent_path()) {
+                    fs::create_directories(artifact_path.parent_path());
+                }
+                const fs::path temp_path = artifact_path.string() + ".tmp";
+                if (fs::exists(temp_path)) fs::remove(temp_path);
+                torch::save(artifact, temp_path.string());
+                fs::rename(temp_path, artifact_path);
+
+                // sidecar 只记录便于人工检查的元数据；参数本体仍以带 schema 的 tensor 包为准。
+                std::ofstream sidecar(artifact_path.string() + ".yaml");
+                sidecar << std::fixed << std::setprecision(6)
+                        << "schema_version: " << kOracleTeacherSchemaVersion << "\n"
+                        << "target_frame_id: " << event.target_frame_id << "\n"
+                        << "target_keyframe_index: " << event.target_keyframe_index << "\n"
+                        << "teacher_budget: " << snapshot.budget << "\n"
+                        << "G_t: " << event.target_insert_global_update << "\n"
+                        << "G_snapshot: " << oracle_global_update_count_ << "\n"
+                        << "mean_optimization_count: " << mean_count << "\n"
+                        << "original_count: " << event.target_original_count << "\n"
+                        << "survivor_count: " << survivor_global_ids.numel() << "\n";
+
+                snapshot.saved = true;
+                std::cout << "[OracleTeacher] teacher snapshot saved: frame_id="
+                          << event.target_frame_id << ", teacher_budget=" << snapshot.budget
+                          << ", G=" << oracle_global_update_count_
+                          << ", mean_count=" << mean_count
+                          << ", survivors=" << survivor_global_ids.numel()
+                          << ", artifact=" << snapshot.artifact_path << std::endl;
+            }
+        }
+    }
+
+    if (oracle_first_insert_global_update_ < 0 ||
+        oracle_global_update_count_ <= oracle_first_insert_global_update_) return;
+    const int64_t relative_updates =
+        oracle_global_update_count_ - oracle_first_insert_global_update_;
+    if (relative_updates % oracle_eval_interval_ != 0 ||
+        oracle_last_eval_global_update_ == oracle_global_update_count_) {
+        return;
+    }
+
+    torch::NoGradGuard no_grad;
+    auto lpips_module = loadLpipsModuleCached(lpips_path_);
+    if (!lpips_module) {
+        throw std::runtime_error("[OracleTeacher] LPIPS model is required for checkpoint evaluation");
+    }
+    auto bg = white_background_
+        ? torch::ones({3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA))
+        : torch::zeros({3}, torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA));
+
+    const fs::path csv_path = fs::path(result_path_) / "oracle_teacher" / "metrics.csv";
+    fs::create_directories(csv_path.parent_path());
+    const bool write_header = !fs::exists(csv_path);
+    std::ofstream metrics(csv_path, std::ios::app);
+    if (!metrics.is_open()) {
+        throw std::runtime_error("[OracleTeacher] cannot write metrics CSV: " + csv_path.string());
+    }
+    if (write_header) {
+        metrics << "mode,target_frame_id,target_keyframe_index,eval_keyframe_index,"
+                   "eval_frame_id,image_name,G_t,G,relative_updates,psnr,ssim,lpips\n";
+    }
+    metrics << std::fixed << std::setprecision(8);
+
+    // render_2d 的历史接口要求 shared_ptr；本方法由持有模型的 optimize() 同步调用，
+    // 因此这里只创建不接管生命周期的临时视图，绝不让它逃出当前评估作用域。
+    const std::shared_ptr<GaussianModel> model_view(this, [](GaussianModel*) {});
+
+    const auto& first_event = oracle_events_.front();
+    for (const int camera_index : oracle_check_keyframe_indices_) {
+        // 新一批邻域中的未来视图还没有通过 bag 到达时，Dataset 中不存在其图像/位姿，
+        // 因而不能也不应伪造指标；它到达后会在后续所有检查点被纳入同一固定并集。
+        if (camera_index >= static_cast<int>(dataset->train_cameras_.size())) continue;
+        const auto& eval_camera = dataset->train_cameras_[camera_index];
+        auto rendered = render_2d(
+            eval_camera, model_view, bg, 1.0f, false, torch::Tensor(), RenderMode2D::RGB_ONLY)
+            .rendered_image.clamp(0, 1);
+        auto ground_truth = eval_camera->original_image_.to(torch::kCUDA).clamp(0, 1);
+        const double psnr = loss_utils::psnr(rendered, ground_truth).mean().item<double>();
+        const double ssim = loss_utils::ssim(rendered, ground_truth).item<double>();
+        std::vector<torch::jit::IValue> lpips_inputs = {
+            rendered.unsqueeze(0), ground_truth.unsqueeze(0)};
+        const double lpips = lpips_module->forward(lpips_inputs).toTensor().item<double>();
+        const int eval_frame_id = parseFrameIdFromImageName(eval_camera->image_name_);
+
+        metrics << oracle_teacher_mode_ << ","
+                << first_event.target_frame_id << ","
+                << first_event.target_keyframe_index << ","
+                << camera_index << ","
+                << eval_frame_id << ","
+                << eval_camera->image_name_ << ","
+                << oracle_first_insert_global_update_ << ","
+                << oracle_global_update_count_ << ","
+                << relative_updates << ","
+                << psnr << "," << ssim << "," << lpips << "\n";
+    }
+    oracle_last_eval_global_update_ = oracle_global_update_count_;
+}
+
+void GaussianModel::validateOracleTeacherExperimentComplete(
+    const std::shared_ptr<Dataset>& dataset) const
+{
+    if (oracle_teacher_mode_ == "off") return;
+    for (const auto& event : oracle_events_) {
+        if (!event.inserted) {
+            throw std::runtime_error(
+                "[OracleTeacher] target frame was not encountered as a keyframe: " +
+                std::to_string(event.target_frame_id));
+        }
+        if (oracle_teacher_mode_ == "capture") {
+            std::vector<int> missing_budgets;
+            for (const auto& snapshot : event.snapshots) {
+                if (!snapshot.saved) missing_budgets.push_back(snapshot.budget);
+            }
+            if (!missing_budgets.empty()) {
+                std::ostringstream message;
+                message << "[OracleTeacher] target batch did not reach configured teacher budgets: frame "
+                        << event.target_frame_id << ", missing_K=[";
+                for (size_t i = 0; i < missing_budgets.size(); ++i) {
+                    message << (i == 0 ? "" : ",") << missing_budgets[i];
+                }
+                message << "]";
+                throw std::runtime_error(message.str());
+            }
+        }
+        if (oracle_teacher_mode_ == "replay" && !event.replay_applied) {
+            throw std::runtime_error(
+                "[OracleTeacher] replay artifact was not applied: frame " +
+                std::to_string(event.target_frame_id));
+        }
+    }
+    if (oracle_check_keyframe_indices_.empty() ||
+        static_cast<int>(dataset->train_cameras_.size()) <= *oracle_check_keyframe_indices_.rbegin()) {
+        throw std::runtime_error(
+            "[OracleTeacher] sequence ended before the requested future keyframe neighborhood arrived");
+    }
+    const fs::path metrics_path = fs::path(result_path_) / "oracle_teacher" / "metrics.csv";
+    if (!fs::exists(metrics_path) || fs::file_size(metrics_path) == 0) {
+        throw std::runtime_error("[OracleTeacher] checkpoint metrics were not produced");
+    }
 }
 
 struct RegressionInput{
@@ -2476,6 +3336,18 @@ void extend(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<GaussianMod
         viewpoint_cam->raw_focal_ = focal;
     }
 
+    // Oracle teacher 实验只在配置指定的目标关键帧生效。capture 记录 baseline 批次；
+    // replay 用 artifact 中仍存活的完整参数替换该批次。普通 baseline 直接返回，不产生额外开销。
+    pc->prepareOracleTeacherInsertion(
+        dataset,
+        viewpoint_cam,
+        fused_point_cloud,
+        features_dc,
+        features_rest,
+        opacities,
+        scales,
+        rots);
+
     const int64_t total_inserted = fused_point_cloud.size(0);
     if (total_inserted == 0) {
         viewpoint_cam->added_ids_.clear();
@@ -2732,6 +3604,10 @@ double optimize(const std::shared_ptr<Dataset>& dataset, std::shared_ptr<Gaussia
             pc->exposure_optimizer_->step();
             pc->exposure_optimizer_->zero_grad(true);
         }
+
+        // G 的单位是一轮完整的单视图更新，而不是 optimize() 调用次数。
+        // 评估发生在参数更新之后，并且不会修改任何训练状态。
+        pc->afterOracleTeacherOptimizerStep(dataset, visible);
 
         // Update keyframe attributes
         pc->keyframe_train_times_[idx]++;

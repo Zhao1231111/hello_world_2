@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
+#include <set>
 #include <chrono>
 #include <utility>
 
@@ -163,6 +164,25 @@ public:
         torch::Tensor& new_ids);
 
     void prune(torch::Tensor& keep_mask);
+
+    // Oracle teacher 实验：在一个或多个目标 insertion 处记录或替换整批 Gaussian 参数。
+    void prepareOracleTeacherInsertion(
+        const std::shared_ptr<Dataset>& dataset,
+        const std::shared_ptr<Camera>& camera,
+        torch::Tensor& new_xyz,
+        torch::Tensor& new_features_dc,
+        torch::Tensor& new_features_rest,
+        torch::Tensor& new_opacities,
+        torch::Tensor& new_scaling,
+        torch::Tensor& new_rotation);
+
+    // 每完成一次单视图稀疏 Adam 更新后调用：累计 G、分别累计各目标批次优化次数并按配置评估。
+    void afterOracleTeacherOptimizerStep(
+        const std::shared_ptr<Dataset>& dataset,
+        const torch::Tensor& visibility);
+
+    // 运行结束前验证所有目标帧、teacher artifact 和检查邻域是否完整。
+    void validateOracleTeacherExperimentComplete(const std::shared_ptr<Dataset>& dataset) const;
 
 public:
     int sh_degree_;//SH阶数
@@ -318,6 +338,48 @@ public:
     std::string train_visual_eval_output_dir_;               // 单帧训练过程评估输出目录
     std::vector<int> train_visual_eval_last_saved_times_;    // 记录每个训练帧上次保存时的训练次数，避免重复保存
     std::vector<int> train_visual_eval_warned_test_frame_ids_; // 已经提示过“这是 test 帧”的 frame id
+
+    // === Oracle teacher 回插实验状态 ===
+    struct OracleTeacherSnapshot {
+        int budget = -1;
+        std::string artifact_path;
+        bool saved = false;
+    };
+
+    struct OracleTeacherEvent {
+        int target_frame_id = -1;
+        // replay 只会选择一个 K，因此仍使用单一路径；capture 的多个 K 则分别存放在
+        // snapshots 中，并共享该插入批次的 optimization_counts。
+        std::string artifact_path;
+        std::vector<OracleTeacherSnapshot> snapshots;
+        int target_keyframe_index = -1;
+        int64_t target_insert_global_update = -1;
+        int64_t target_start_id = -1;
+        int64_t target_original_count = 0;
+        bool inserted = false;
+        bool replay_applied = false;
+        // CPU int64，长度固定为这一原始插入批次；不同批次绝不共用计数器。
+        torch::Tensor optimization_counts;
+        torch::Tensor initial_xyz;
+        torch::Tensor pre_insertion_fingerprint;
+        torch::Tensor target_camera_pose;
+    };
+
+    std::string oracle_teacher_mode_ = "off";
+    // capture 中保存排序后的无重复 K 集合；replay 中仅含被选择的一个 K。
+    std::vector<int> oracle_teacher_budgets_;
+    int oracle_teacher_budget_ = -1;  // replay 当前选择的唯一 K；capture 不使用该标量。
+    int oracle_neighbor_radius_ = -1;
+    int oracle_eval_interval_ = -1;
+    // Oracle replay 的属性消融选择；all 表示完整 teacher，none 表示纯 baseline 回放。
+    std::string oracle_replay_attributes_ = "all";
+    int64_t oracle_global_update_count_ = 0;
+    // 所有曲线从首次 insertion 后开始，以绝对 G 为横轴；每个检查点渲染固定并集内已到达的视图。
+    int64_t oracle_first_insert_global_update_ = -1;
+    int64_t oracle_last_eval_global_update_ = -1;
+    std::vector<OracleTeacherEvent> oracle_events_;
+    // 为多个 insertion 邻域取并集后的 keyframe 索引；未到达的未来视图在到达前不会被渲染。
+    std::set<int> oracle_check_keyframe_indices_;
 };
 
 void extend(

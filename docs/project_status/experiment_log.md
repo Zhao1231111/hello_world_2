@@ -2,7 +2,7 @@
 
 > 维护方式：按时间从旧到新追加，最新记录放在文档末尾。  
 > 当前分支：`RAL-resubmit`  
-> 当前源码基线：`149b83c` + E013/E014 未提交修改  
+> 当前源码基线：`ba0d961 refine optmize shedule logic(delete p2, p3)`
 > 最后更新：2026-09-11
 
 本文档是 LIV-Surfel 的增量式项目日志。每条记录把动机、代码改动、实验结果、结论和
@@ -40,8 +40,8 @@ Git 落盘放在一起，避免代码、实验目录与结论彼此失去对应�
 
 ### 当前运行状态
 
-当前源码为 `149b83c` 加 E013/E014 的未提交修改。2026-09-11 已使用以下命令完成 Release
-编译，`devel/lib/gaussian_lic/gs_mapping` 与当前源码一致：
+当前源码已落入 `ba0d961 refine optmize shedule logic(delete p2, p3)`。2026-09-11 已使用以下
+命令完成 Release 编译，`devel/lib/gaussian_lic/gs_mapping` 与其中的代码修改一致：
 
 ```bash
 cd /root/catkin_gaussian
@@ -366,7 +366,7 @@ catkin_make -DCMAKE_BUILD_TYPE=Release -j2 -l2
 
 ## 2026-09-11 / E013：删除废弃的 `densifyAndPrune` 逻辑
 
-- 状态：代码清理完成，Release 编译通过，尚未提交。
+- 状态：代码清理完成，Release 编译通过，已提交。
 - 模式与数据：影响共用 mapping/optimization 代码及默认配置；未运行 rosbag 实验。
 - 基线：`149b83c`。旧致密化通过 `densify_from_train_times: 200000` 实际关闭，但梯度
   统计、候选帧扫描和状态维护仍会执行。
@@ -389,7 +389,8 @@ catkin_make -DCMAKE_BUILD_TYPE=Release -j2 -l2
 - 对比与结论：运行代码中已无旧 densify 调用、统计或配置；优化视角列表恢复为
   P1→P2→P3。保留的两个 prune 路径和正常 Gaussian 插入接口均保持可用。
 - 决策：保留本次清理；后续 baseline 不再出现 densify 配置或软关闭阈值。
-- Git 落盘：尚未提交；提交后在本条补写 commit hash 和原始标题。
+- Git 落盘：`ba0d961 refine optmize shedule logic(delete p2, p3)`；该提交同时包含 E014 的
+  调度修改和本日志。
 - 产物：当前工作区 diff；编译产物
   `/root/catkin_gaussian/devel/lib/gaussian_lic/gs_mapping`。
 - 备注：本条仅验证编译与调用边界，没有宣称运行时指标通过；下一次实验应使用当前重新
@@ -397,7 +398,7 @@ catkin_make -DCMAKE_BUILD_TYPE=Release -j2 -l2
 
 ## 2026-09-11 / E014：删除滞后 loss 分层并实验 P1 + 历史帧均匀随机调度
 
-- 状态：代码修改、Release 编译和完整序列实验均成功；尚未提交。
+- 状态：代码修改、Release 编译和完整序列实验均成功；已提交。
 - 模式与数据：HKU Campus 00 完整序列，baseline；pose refinement off，SPNet off，
   regressor off，`experiment_seed=20260909`。
 - 基线：E008 的 full baseline，`149b83c`，588.34 s，1,090,761 GS；Train
@@ -422,13 +423,15 @@ catkin_make -DCMAKE_BUILD_TYPE=Release -j2 -l2
 - 对比与结论：最终 Gaussian 少 918（0.084%）。Train/Novel PSNR 分别提高
   0.0591/0.0363 dB，Novel SSIM 下降 0.00029，Train/Novel LPIPS 分别变差
   0.00090/0.00105，均属于很小的单次运行波动；没有观察到删除 P2/P3 后的明显质量退化，
-  也没有证据表明简单均匀随机抽样能显著改善质量。总 mapping 时间增加 15.99 s（2.7%）；
-  由于 E014 与 E008 之间还包含 E013 对废弃统计和调度代码的清理，速度差不能单独归因于
-  新 opt-list 策略，但这些 E013 差异不会改变渲染指标的直接对照意义。
+  也没有证据表明简单均匀随机抽样能显著改善质量。总 mapping 时间增加 15.99 s（2.7%），
+  归因为新调度选取了不同历史视角，使共享 Gaussian 的 opacity、scale、屏幕覆盖和后续
+  插入过程沿不同轨迹演化，从而改变了实际优化成本。本次是组合状态的单次完整运行，不能把
+  该速度差解释为 E013 清理导致的退化，也不把它作为方案 1 的独立速度结论；渲染质量指标仍
+  可用于判断该调度没有明显退化。
 - 决策：保留方案 1 作为新的简单调度基线；若继续方案 2，应以 E014 为对照，仅增加一个
   明确定义的陈旧度因素。
-- Git 落盘：尚未提交；实验目录保存了运行时的 `git_status.txt` 和完整
-  `git_diff.patch`。提交后应补写 commit hash 和原始标题。
+- Git 落盘：`ba0d961 refine optmize shedule logic(delete p2, p3)`；实验目录仍保存运行时的
+  `git_status.txt` 和完整 `git_diff.patch`，用于还原实验时的未提交状态。
 - 产物：
   `/root/autodl-tmp/experiments/opt_list_uniform_full/p1_uniform_seed20260909`；包含 effective
   configs、commands、Git 状态/diff、GPU 采样、完整日志和逐帧 metrics。

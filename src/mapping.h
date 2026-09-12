@@ -179,6 +179,44 @@ public:
         if (node["train_visual_eval_frame_ids"]) {
             train_visual_eval_frame_ids = node["train_visual_eval_frame_ids"].as<std::vector<int>>();
         }
+
+        // === Oracle teacher 回插实验参数 ===
+        // 单次实验沿用旧的标量字段；级联实验可指定多个 insertion，多 K capture 使用
+        // 路径模板展开 artifact。这样不会把帧号、预算或文件名硬编码进 C++。
+        oracle_teacher_mode =
+            node["oracle_teacher_mode"] ? node["oracle_teacher_mode"].as<std::string>() : "off";
+        oracle_target_frame_id =
+            node["oracle_target_frame_id"] ? node["oracle_target_frame_id"].as<int>() : -1;
+        oracle_teacher_budget =
+            node["oracle_teacher_budget"] ? node["oracle_teacher_budget"].as<int>() : -1;
+        // capture 可在同一条 baseline 轨迹上依次导出多个 K 的快照；replay 则只选择
+        // oracle_replay_budget 指定的一个 K。旧的 oracle_teacher_budget 标量继续兼容
+        // 既有单 K 实验配置。
+        if (node["oracle_teacher_budgets"]) {
+            oracle_teacher_budgets = node["oracle_teacher_budgets"].as<std::vector<int>>();
+        }
+        oracle_replay_budget =
+            node["oracle_replay_budget"] ? node["oracle_replay_budget"].as<int>() : -1;
+        oracle_neighbor_radius =
+            node["oracle_neighbor_radius"] ? node["oracle_neighbor_radius"].as<int>() : -1;
+        oracle_eval_interval =
+            node["oracle_eval_interval"] ? node["oracle_eval_interval"].as<int>() : -1;
+        oracle_artifact_path =
+            node["oracle_artifact_path"] ? node["oracle_artifact_path"].as<std::string>() : "";
+        oracle_artifact_path_template =
+            node["oracle_artifact_path_template"]
+                ? node["oracle_artifact_path_template"].as<std::string>() : "";
+        if (node["oracle_target_frame_ids"]) {
+            oracle_target_frame_ids = node["oracle_target_frame_ids"].as<std::vector<int>>();
+        }
+        if (node["oracle_artifact_paths"]) {
+            oracle_artifact_paths = node["oracle_artifact_paths"].as<std::vector<std::string>>();
+        }
+        // replay 时可选择只移植一部分 teacher 属性。默认 all 保持既有完整移植行为；
+        // 该字段只服务于 Oracle 消融，不会改变 baseline 或回归器的初始化接口。
+        oracle_replay_attributes =
+            node["oracle_replay_attributes"]
+                ? node["oracle_replay_attributes"].as<std::string>() : "all";
     }
 
     /// dataset
@@ -291,6 +329,25 @@ public:
     int train_visual_eval_every_k_train_times = 1;         // 每训练多少次保存一次
     std::vector<int> train_visual_eval_frame_ids;          // 需要跟踪的训练帧原始 frame id
     std::string train_visual_eval_output_dir;              // 评估结果输出目录
+
+    // === Oracle teacher 回插实验 ===
+    std::string oracle_teacher_mode = "off";              // off / capture / replay
+    int oracle_target_frame_id = -1;                       // 目标关键帧的原始 frame id
+    int oracle_teacher_budget = -1;                        // 兼容旧配置：单个 capture/replay 预算 K
+    std::vector<int> oracle_teacher_budgets;               // capture：同一轨迹需要导出的 K 集合
+    int oracle_replay_budget = -1;                         // replay：从多 K 快照中选择的唯一 K
+    int oracle_neighbor_radius = -1;                       // 待检查关键帧前后各取多少帧
+    int oracle_eval_interval = -1;                         // 相对 G_t 的全局更新检查步长
+    std::string oracle_artifact_path;                      // capture 输出 / replay 输入的参数包
+    // 多 K 路径模板；必须包含 {frame} 和 {budget}，例如 teacher_frame{frame}_k{budget}.pt。
+    std::string oracle_artifact_path_template;
+    // 多点级联模式。frame id 必须严格递增；使用显式路径时两个列表等长，使用模板时
+    // oracle_artifact_paths 留空。未提供 frame 列表时兼容上方单点标量字段。
+    std::vector<int> oracle_target_frame_ids;
+    std::vector<std::string> oracle_artifact_paths;
+    // all / none，或逗号分隔的 xyz,sh_dc,sh_rest,opacity,scaling,rotation。
+    // 未选中的属性沿用本次 replay 自己的 baseline 初始化值。
+    std::string oracle_replay_attributes = "all";
 };
 
 struct Frame 

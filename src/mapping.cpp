@@ -512,6 +512,10 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
     t_end = std::chrono::steady_clock::now();
     total_mapping_time += std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
 
+    // Oracle 实验必须真正命中目标帧、生成/应用参数包，并覆盖完整的关键帧邻域。
+    // 任一条件不满足都让本次运行失败，避免只有进程退出却没有有效实验数据。
+    gaussians->validateOracleTeacherExperimentComplete(dataset);
+
     /// [6] evaluation
     std::cout << "Runtime Statistics"<<std::endl;
     std::cout << std::fixed << std::setprecision(2) << "Total Mapping Time: " << total_mapping_time << "s" << std::endl;
@@ -635,10 +639,17 @@ int main(int argc, char** argv)
         while (!exit_flag) 
         {
             double now = ros::Time::now().toSec();
-            if (gaussians_initialized && (now - last_point_time > 5.0) && image_buf.empty()) 
+            if (gaussians_initialized && now - last_point_time > 5.0)
             {
-                exit_flag = true;  // exit if no data is received for more than 1 second
-            } 
+                std::lock_guard<std::mutex> lock(m_buf);
+                // rosbag 播放结束时，三个 topic 的收尾消息可能并不完全对齐：例如只剩
+                // image 或 pose。它们已经无法再组成一帧 RGB/pose/point 三元组；继续等待
+                // 不会产生任何优化，反而会令离线回放永不结束。只在至少一个队列已经为空时
+                // 结束，避免丢弃仍可由 mapping 线程对齐并消费的完整尾部数据。
+                if (point_buf.empty() || pose_buf.empty() || image_buf.empty()) {
+                    exit_flag = true;
+                }
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
     });
